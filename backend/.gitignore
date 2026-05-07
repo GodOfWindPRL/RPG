@@ -1,0 +1,11 @@
+# Dependencies
+node_modules/
+
+# Env (never commit real keys)
+.env
+
+# Build output
+dist/
+
+# Logs
+*.log

@@ -1,0 +1,161 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum ItemRarity {
+  WHITE
+  BLUE
+  GREEN
+  YELLOW
+  MYTHIC
+}
+
+enum QuestType {
+  KILL_ENEMIES
+  COLLECT_ITEMS
+  KILL_BOSS
+  EXPLORE_AREA
+}
+
+enum SkillDamageKind {
+  PHYSIC
+  MAGIC
+}
+
+enum SkillElement {
+  NONE
+  FIRE
+  COLD
+  LIGHTNING
+  POISON
+}
+
+model User {
+  id           String      @id @default(cuid())
+  email        String      @unique
+  passwordHash String
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
+  characters   Character[]
+}
+
+model Character {
+  id             String           @id @default(cuid())
+  userId         String
+  name           String
+  className      String
+  level          Int              @default(1)
+  exp            Int              @default(0)
+  skillPoints    Int              @default(0)
+  statPoints     Int              @default(0)
+  hp             Int              @default(200)
+  mana           Int              @default(100)
+  str            Int              @default(0)
+  agi            Int              @default(0)
+  vit            Int              @default(0)
+  mag            Int              @default(0)
+  posX           Float            @default(0)
+  posY           Float            @default(0)
+  posZ           Float            @default(0)
+  createdAt      DateTime         @default(now())
+  updatedAt      DateTime         @updatedAt
+  user           User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  inventoryItems InventoryItem[]
+  skills         CharacterSkill[]
+  quests         CharacterQuest[]
+  dungeonRuns    DungeonRun[]
+}
+
+model SkillDefinition {
+  id             String           @id
+  name           String
+  description    String
+  requiredLevel  Int              @default(1)
+  requiredSkill  String?
+  baseDamage     Int              @default(0)
+  manaCost       Int              @default(0)
+  cooldownMs     Int              @default(1000)
+  damageKind     SkillDamageKind  @default(PHYSIC)
+  element        SkillElement     @default(NONE)
+  characterLinks CharacterSkill[]
+}
+
+model CharacterSkill {
+  id          String          @id @default(cuid())
+  characterId String
+  skillId     String
+  level       Int             @default(1)
+  unlockedAt  DateTime        @default(now())
+  character   Character       @relation(fields: [characterId], references: [id], onDelete: Cascade)
+  skill       SkillDefinition @relation(fields: [skillId], references: [id], onDelete: Cascade)
+
+  @@unique([characterId, skillId])
+}
+
+model ItemDefinition {
+  id          String          @id
+  name        String
+  slot        String
+  basePower   Int
+  minLevel    Int             @default(1)
+  maxLevel    Int             @default(10)
+  rarity      ItemRarity
+  icon        String?
+  inventories InventoryItem[]
+}
+
+model InventoryItem {
+  id           String         @id @default(cuid())
+  characterId  String
+  definitionId String
+  level        Int
+  rarity       ItemRarity
+  affixJson    String
+  equipped     Boolean        @default(false)
+  quantity     Int            @default(1)
+  createdAt    DateTime       @default(now())
+  character    Character      @relation(fields: [characterId], references: [id], onDelete: Cascade)
+  definition   ItemDefinition @relation(fields: [definitionId], references: [id], onDelete: Cascade)
+}
+
+model QuestDefinition {
+  id             String           @id
+  title          String
+  description    String
+  type           QuestType
+  targetValue    Int
+  targetKey      String
+  rewardExp      Int              @default(20)
+  rewardGold     Int              @default(10)
+  characterLinks CharacterQuest[]
+}
+
+model CharacterQuest {
+  id            String          @id @default(cuid())
+  characterId   String
+  questId       String
+  progressValue Int             @default(0)
+  completed     Boolean         @default(false)
+  updatedAt     DateTime        @updatedAt
+  character     Character       @relation(fields: [characterId], references: [id], onDelete: Cascade)
+  quest         QuestDefinition @relation(fields: [questId], references: [id], onDelete: Cascade)
+
+  @@unique([characterId, questId])
+}
+
+model DungeonRun {
+  id           String    @id @default(cuid())
+  characterId  String
+  dungeonKey   String
+  zone         String
+  difficulty   Int
+  bossDefeated Boolean   @default(false)
+  startedAt    DateTime  @default(now())
+  endedAt      DateTime?
+  character    Character @relation(fields: [characterId], references: [id], onDelete: Cascade)
+}
