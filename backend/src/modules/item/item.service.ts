@@ -348,6 +348,9 @@ export async function rollItem(
     where: {
       minLevel: { lte: level },
       maxLevel: { gte: level },
+      // Potions are dropped on a separate pipeline (rollPotionForMonsterLevel),
+      // not via the regular gear roll.
+      NOT: { slot: { startsWith: 'potion_' } },
     },
   });
   if (candidates.length === 0) return null;
@@ -397,4 +400,49 @@ export async function generateAndGrantItem(characterId: string, level: number) {
   const roll = await rollItem(level);
   if (!roll) return null;
   return grantRolledItem(characterId, roll);
+}
+
+// ─── Potion drop & use ─────────────────────────────────────────────────────
+//
+// Potion definitions live in `definitions.ts`. The id encodes both the kind
+// (hp/mp) and the level (1..5). Heal amount is the canonical source of truth.
+
+export const POTION_HEAL_AMOUNT: Record<string, { hp?: number; mp?: number }> = {
+  hp_potion_1: { hp: 40 },
+  hp_potion_2: { hp: 100 },
+  hp_potion_3: { hp: 250 },
+  hp_potion_4: { hp: 600 },
+  hp_potion_5: { hp: 2000 },
+  mp_potion_1: { mp: 20 },
+  mp_potion_2: { mp: 50 },
+  mp_potion_3: { mp: 125 },
+  mp_potion_4: { mp: 300 },
+  mp_potion_5: { mp: 1000 },
+};
+
+/** Tier table — monster level → highest droppable potion tier. */
+export function potionLevelForMonsterLevel(monsterLevel: number): number {
+  if (monsterLevel >= 80) return 5;
+  if (monsterLevel >= 60) return 4;
+  if (monsterLevel >= 40) return 3;
+  if (monsterLevel >= 20) return 2;
+  return 1;
+}
+
+export type PotionRoll = {
+  definition: ItemDefinition;
+  level: number;
+};
+
+/**
+ * Roll a HP/MP potion drop appropriate for a monster of the given level.
+ * 50/50 between HP and MP.
+ */
+export async function rollPotionForMonsterLevel(monsterLevel: number): Promise<PotionRoll | null> {
+  const lv = potionLevelForMonsterLevel(monsterLevel);
+  const isHp = Math.random() < 0.5;
+  const id = `${isHp ? 'hp' : 'mp'}_potion_${lv}`;
+  const def = await prisma.itemDefinition.findUnique({ where: { id } });
+  if (!def) return null;
+  return { definition: def, level: lv };
 }

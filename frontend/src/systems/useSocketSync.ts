@@ -189,6 +189,71 @@ export function useSocketSync() {
         }
       }
       if (changed) setEquipmentLayout(next);
+      // Drop F1-F4 hotbar reference too.
+      const itemBar = useGameStore.getState().itemBar;
+      itemBar.forEach((id, i) => {
+        if (id === itemId) useGameStore.getState().setItemBarSlot(i, null);
+      });
+    });
+    socket.on(
+      'item:used',
+      (payload: {
+        itemId: string;
+        hp: number;
+        mana: number;
+        maxHp: number;
+        maxMana: number;
+        healedHp?: number;
+        healedMp?: number;
+      }) => {
+        const { itemId } = payload;
+        // Remove the consumed potion from inventory & hotbar.
+        setInventory(useGameStore.getState().inventory.filter((it) => it.id !== itemId));
+        const itemBar = useGameStore.getState().itemBar;
+        itemBar.forEach((id, i) => {
+          if (id === itemId) useGameStore.getState().setItemBarSlot(i, null);
+        });
+        // Apply HP / MP heal.
+        setManaHp(payload.hp, payload.mana, payload.maxHp, payload.maxMana);
+        const ch = useGameStore.getState().character;
+        if (ch) {
+          if ((payload.healedHp ?? 0) > 0) {
+            addWorldPopup({
+              x: ch.posX,
+              z: ch.posZ,
+              y: 2.4,
+              text: `+${payload.healedHp} HP`,
+              color: '#34d399',
+              fontSize: 1.2,
+              fontWeight: 'bold',
+            });
+          }
+          if ((payload.healedMp ?? 0) > 0) {
+            addWorldPopup({
+              x: ch.posX,
+              z: ch.posZ,
+              y: 2.4,
+              text: `+${payload.healedMp} MP`,
+              color: '#60a5fa',
+              fontSize: 1.2,
+              fontWeight: 'bold',
+            });
+          }
+        }
+      },
+    );
+    socket.on('item:useFailed', (_payload: { itemId: string; reason?: string }) => {
+      const ch = useGameStore.getState().character;
+      if (!ch) return;
+      addWorldPopup({
+        x: ch.posX,
+        z: ch.posZ,
+        y: 2.25,
+        text: 'Cannot use item',
+        color: '#fca5a5',
+        fontSize: 1.1,
+        fontWeight: 'bold',
+      });
     });
     socket.on(
       'player:revived',

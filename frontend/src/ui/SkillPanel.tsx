@@ -16,6 +16,7 @@ export function SkillPanel({ onCast }: { onCast: (skillId: string) => void }) {
   const nodes = useMemo(() => {
     const slash = byId.get('slash');
     const fire = byId.get('firebolt');
+    const blizz = byId.get('blizzard');
     return [
       {
         id: 'slash',
@@ -32,6 +33,14 @@ export function SkillPanel({ onCast }: { onCast: (skillId: string) => void }) {
         level: fire?.level ?? 0,
         mana: fire?.skill.manaCost ?? 0,
         cooldownMs: fire?.skill.cooldownMs ?? 0,
+      },
+      {
+        id: 'blizzard',
+        icon: '❄️',
+        name: blizz?.skill.name ?? 'Blizzard',
+        level: blizz?.level ?? 0,
+        mana: blizz?.skill.manaCost ?? 0,
+        cooldownMs: blizz?.skill.cooldownMs ?? 0,
       },
     ];
   }, [byId]);

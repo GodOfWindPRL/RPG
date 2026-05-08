@@ -14,8 +14,7 @@ import { ModalShell } from './ui/game/ModalShell';
 import { PlayerHud } from './ui/game/PlayerHud';
 import { QuestTracker } from './ui/game/QuestTracker';
 import { MiniMap } from './ui/game/MiniMap';
-import { SkillCrossbar } from './ui/game/SkillCrossbar';
-import { RpgDock, type DockPanel } from './ui/game/RpgDock';
+import { BottomHUD, type DockPanel } from './ui/game/BottomHUD';
 import { SettingsIconButton } from './ui/game/SettingsIconButton';
 import { CharacterSheet } from './ui/game/CharacterSheet';
 import { DeathOverlay } from './ui/game/DeathOverlay';
@@ -24,6 +23,37 @@ type GameModal = 'settings' | DockPanel | null;
 const SKILL_RANGE = 6;
 const CHASE_INTERVAL_MS = 80;
 const SWING_HIT_AT_PCT = 0.5;
+/** Must match backend FIREBOLT_RADIUS in world.gateway.ts. */
+const FIREBOLT_RADIUS_M = 2.5;
+/** Match backend PROJECTILE_SPEED so VFX impact lines up with damage tick. */
+const FIREBOLT_PROJECTILE_SPEED = 14;
+/** Match backend BLIZZARD_HALF / DURATION_MS. */
+const BLIZZARD_HALF_M = 2.5;
+const BLIZZARD_DURATION_MS = 2000;
+/** Free-aim cast is only allowed within a 30×30 square around the player. */
+const FREE_AIM_HALF_M = 15;
+/** How far Firebolt flies when no target selected. */
+const FIREBOLT_FREE_AIM_RANGE_M = 14;
+
+/** F-keys: F5–F8 mở các modal. */
+const FKEY_TO_PANEL: Record<string, DockPanel> = {
+  F5: 'quests',
+  F6: 'character',
+  F7: 'inventory',
+  F8: 'skills',
+};
+
+const FKEY_ITEM_SLOTS: Record<string, number> = { F1: 0, F2: 1, F3: 2, F4: 3 };
+
+/** Phím 1–6 ↔ skill bar slot. Slot rỗng thì không làm gì. */
+const KEY_TO_SKILLBAR_SLOT: Record<string, number> = {
+  '1': 0,
+  '2': 1,
+  '3': 2,
+  '4': 3,
+  '5': 4,
+  '6': 5,
+};
 
 function resolveSelectedTarget() {
   const s = useGameStore.getState();
@@ -31,15 +61,6 @@ function resolveSelectedTarget() {
   if (!id) return null;
   return s.enemies.find((e) => e.id === id && e.hp > 0) ?? null;
 }
-
-/** Phím 1–5 ↔ chỉ số mảng `skills` (ô crossbar cùng thứ tự). */
-const KEY_TO_SKILL_INDEX: Record<string, number> = {
-  '1': 0,
-  '2': 1,
-  '3': 2,
-  '4': 3,
-  '5': 4,
-};
 
 export default function App() {
   const token = useGameStore((s) => s.token);
@@ -49,6 +70,8 @@ export default function App() {
   const triggerAttackAnim = useGameStore((s) => s.triggerAttackAnim);
   const triggerSlashFx = useGameStore((s) => s.triggerSlashFx);
   const setSlashAcceptedSwingId = useGameStore((s) => s.setSlashAcceptedSwingId);
+  const spawnFireboltFx = useGameStore((s) => s.spawnFireboltFx);
+  const spawnBlizzardFx = useGameStore((s) => s.spawnBlizzardFx);
   const setPlayerFacingYaw = useGameStore((s) => s.setPlayerFacingYaw);
   const socketRef = useSocketSync();
   const [modal, setModal] = useState<GameModal>(null);
@@ -153,6 +176,25 @@ export default function App() {
     return () => window.removeEventListener('rpg:slashHit', onSlashHit as EventListener);
   }, [socketRef]);
 
+  const tryUseItem = useCallback(
+    (itemId: string) => {
+      const st = useGameStore.getState();
+      const it = st.inventory.find((i) => i.id === itemId);
+      if (!it) return;
+      const slot = (it.definition?.slot ?? '').toLowerCase();
+      // Only potions are consumable for now.
+      if (!slot.startsWith('potion_')) {
+        st.setFloatingText(`Cannot use ${it.definition.name}`);
+        window.setTimeout(() => useGameStore.getState().setFloatingText(null), 600);
+        return;
+      }
+      const sock = socketRef.current;
+      if (!sock) return;
+      sock.emit('item:use', { itemId });
+    },
+    [socketRef],
+  );
+
   const tryCastSkillIndex = useCallback(
     (skillIndex: number) => {
       const now = Date.now();
@@ -195,12 +237,45 @@ export default function App() {
 
       if (!sock) return;
 
-      // Non-slash skills still need a clicked target (no free-aim).
-      if (skillId !== 'slash' && !target) return;
       // Slash without a selected target: free-aim only (arc collision).
       if (skillId === 'slash' && !target) return;
 
-      const enemyId = target!.id;
+      // If no target is selected, allow free-aim for some skills.
+      if (!target) {
+        const caster = useGameStore.getState().character;
+        if (!caster) return;
+        if (skillId === 'firebolt') {
+          const yaw = useGameStore.getState().playerFacingYaw;
+          const toX = caster.posX + Math.sin(yaw) * FIREBOLT_FREE_AIM_RANGE_M;
+          const toZ = caster.posZ + Math.cos(yaw) * FIREBOLT_FREE_AIM_RANGE_M;
+          const travelMs = Math.max(
+            120,
+            Math.min(900, Math.round((FIREBOLT_FREE_AIM_RANGE_M / FIREBOLT_PROJECTILE_SPEED) * 1000)),
+          );
+          spawnFireboltFx({
+            fromX: caster.posX,
+            fromZ: caster.posZ,
+            toX,
+            toZ,
+            travelMs,
+            radius: FIREBOLT_RADIUS_M,
+          });
+          sock.emit('skill:cast', { skillId, x: toX, z: toZ });
+        } else if (skillId === 'blizzard') {
+          const cursor = useGameStore.getState().cursorWorldXZ;
+          if (!cursor) return;
+          // Must be within a 30×30 square around the player.
+          if (Math.abs(cursor.x - caster.posX) > FREE_AIM_HALF_M || Math.abs(cursor.z - caster.posZ) > FREE_AIM_HALF_M) return;
+          spawnBlizzardFx({ centerX: cursor.x, centerZ: cursor.z, durationMs: BLIZZARD_DURATION_MS, half: BLIZZARD_HALF_M });
+          sock.emit('skill:cast', { skillId, x: cursor.x, z: cursor.z });
+        } else {
+          // Other skills still require a target for now.
+          return;
+        }
+        return;
+      }
+
+      const enemyId = target.id;
 
       const fireIfInRange = () => {
         const c = useGameStore.getState().character;
@@ -218,6 +293,29 @@ export default function App() {
             window.setTimeout(() => {
               const alive = useGameStore.getState().enemies.some((e) => e.id === delayedEnemyId && e.hp > 0);
               if (!alive) return;
+              const caster = useGameStore.getState().character;
+              const eNow = useGameStore.getState().enemies.find((en) => en.id === delayedEnemyId);
+              if (skillId === 'firebolt' && caster && eNow) {
+                const dx = eNow.x - caster.posX;
+                const dz = eNow.z - caster.posZ;
+                const dist = Math.hypot(dx, dz);
+                const travelMs = Math.max(120, Math.min(900, Math.round((dist / FIREBOLT_PROJECTILE_SPEED) * 1000)));
+                spawnFireboltFx({
+                  fromX: caster.posX,
+                  fromZ: caster.posZ,
+                  toX: eNow.x,
+                  toZ: eNow.z,
+                  travelMs,
+                  radius: FIREBOLT_RADIUS_M,
+                });
+              } else if (skillId === 'blizzard' && eNow) {
+                spawnBlizzardFx({
+                  centerX: eNow.x,
+                  centerZ: eNow.z,
+                  durationMs: BLIZZARD_DURATION_MS,
+                  half: BLIZZARD_HALF_M,
+                });
+              }
               sock.emit('skill:cast', { skillId, enemyId: delayedEnemyId });
             }, Math.round(period * SWING_HIT_AT_PCT));
           }
@@ -250,7 +348,18 @@ export default function App() {
         if (next) sock.emit('player:move', { x: next.posX, y: next.posY, z: next.posZ });
       }, CHASE_INTERVAL_MS);
     },
-    [socketRef, moveBy, stopChase, triggerAttackAnim, triggerSlashFx, setPlayerFacingYaw, attackPeriodMs],
+    [
+      socketRef,
+      moveBy,
+      stopChase,
+      triggerAttackAnim,
+      triggerSlashFx,
+      setPlayerFacingYaw,
+      attackPeriodMs,
+      spawnFireboltFx,
+      spawnBlizzardFx,
+      setSlashAcceptedSwingId,
+    ],
   );
 
   const characterId = character?.id;
@@ -360,8 +469,36 @@ export default function App() {
         const nextIndex = currentIndex < 0 ? 0 : (currentIndex + 1) % aliveEnemies.length;
         setSelectedEnemyId(aliveEnemies[nextIndex].id);
       }
-      const ski = KEY_TO_SKILL_INDEX[e.key];
-      if (ski !== undefined) tryCastSkillIndex(ski);
+
+      // F5–F8 open modals (block browser default such as F5 refresh).
+      const panel = FKEY_TO_PANEL[e.key];
+      if (panel) {
+        e.preventDefault();
+        setModal(panel);
+        return;
+      }
+
+      // F1–F4 use the item assigned to that hotbar slot.
+      const itemSlot = FKEY_ITEM_SLOTS[e.key];
+      if (itemSlot !== undefined) {
+        e.preventDefault();
+        const st = useGameStore.getState();
+        if (st.hotbarPickerOpen) return;
+        const itemId = st.itemBar[itemSlot];
+        if (itemId) tryUseItem(itemId);
+        return;
+      }
+
+      // 1–6 cast the skill assigned to that hotbar slot.
+      const skillSlot = KEY_TO_SKILLBAR_SLOT[e.key];
+      if (skillSlot !== undefined) {
+        const st = useGameStore.getState();
+        if (st.hotbarPickerOpen) return;
+        const id = st.skillBar[skillSlot];
+        if (!id) return;
+        const idx = st.skills.findIndex((s) => s.skill.id === id);
+        if (idx >= 0) tryCastSkillIndex(idx);
+      }
     }
 
     function onKeyup(e: KeyboardEvent) {
@@ -390,7 +527,17 @@ export default function App() {
       window.removeEventListener('keyup', onKeyup);
       window.removeEventListener('blur', onBlur);
     };
-  }, [characterId, modal, moveBy, socketRef, setSelectedEnemyId, stopChase, tryCastSkillIndex, setPlayerFacingYaw]);
+  }, [
+    characterId,
+    modal,
+    moveBy,
+    socketRef,
+    setSelectedEnemyId,
+    stopChase,
+    tryCastSkillIndex,
+    tryUseItem,
+    setPlayerFacingYaw,
+  ]);
 
   if (!token) return <AuthPanel />;
   if (!character) return <CharacterPanel />;
@@ -411,8 +558,14 @@ export default function App() {
         <MiniMap />
       </div>
 
-      <RpgDock onOpen={(panel) => setModal(panel)} />
-      <SkillCrossbar onCastSkillIndex={tryCastSkillIndex} />
+      <BottomHUD
+        onOpenModal={(panel) => setModal(panel)}
+        onCastSkillId={(skillId) => {
+          const idx = useGameStore.getState().skills.findIndex((s) => s.skill.id === skillId);
+          if (idx >= 0) tryCastSkillIndex(idx);
+        }}
+        onUseItem={(itemId) => tryUseItem(itemId)}
+      />
 
       <DeathOverlay
         visible={Boolean(character && character.hp <= 0 && showDeathScreen)}

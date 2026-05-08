@@ -243,11 +243,11 @@ export function EnemyMesh({
         <group position={[0, 0.03, 0]}>
           <mesh rotation={[-Math.PI / 2, 0, 0]}>
             <ringGeometry args={[0.85, 1.35, 64]} />
-            <meshBasicMaterial color="#60a5fa" transparent opacity={0.55} side={THREE.DoubleSide} depthWrite={false} />
+            <meshBasicMaterial color="#1d4ed8" transparent opacity={0.8} side={THREE.DoubleSide} depthWrite={false} />
           </mesh>
           <mesh rotation={[-Math.PI / 2, 0, 0]}>
             <ringGeometry args={[0.6, 0.8, 64]} />
-            <meshBasicMaterial color="#93c5fd" transparent opacity={0.5} side={THREE.DoubleSide} depthWrite={false} />
+            <meshBasicMaterial color="#1e40af" transparent opacity={0.7} side={THREE.DoubleSide} depthWrite={false} />
           </mesh>
           <BossAuraSpin />
         </group>
@@ -273,13 +273,15 @@ export function EnemyMesh({
           <Billboard follow lockX={false} lockY={false} lockZ={false} position={[0, 2.4, 0]}>
             <group>
               <group position={[0, 0.18, 0]}>
-                <Html center distanceFactor={18} style={{ pointerEvents: 'none', userSelect: 'none' }} zIndexRange={[240, 0]}>
+                <Html center distanceFactor={18} style={{ pointerEvents: 'none', userSelect: 'none' }} zIndexRange={[15, 0]}>
                   <div
                     style={{
-                      fontSize: 12,
+                      fontSize: isBoss ? 13 : 12,
                       fontWeight: 900,
-                      color: isBoss ? '#60a5fa' : '#ffffff',
-                      textShadow: '0 0 8px rgba(0,0,0,0.9), 0 1px 2px #000',
+                      color: isBoss ? '#0962f0' : '#ffffff',
+                      textShadow: isBoss
+                        ? '0 0 10px rgba(9,98,240,0.7), 0 1px 3px #000'
+                        : '0 0 8px rgba(0,0,0,0.9), 0 1px 2px #000',
                       whiteSpace: 'nowrap',
                       fontFamily: 'system-ui, Segoe UI, sans-serif',
                       letterSpacing: 0.2,
@@ -291,11 +293,11 @@ export function EnemyMesh({
                     <span>{name || 'Zombie'}</span>
                     {(() => {
                       const now = Date.now();
-                      const icons: { k: string; label: string; color: string }[] = [];
-                      if ((debuffs?.burnUntil ?? 0) > now) icons.push({ k: 'burn', label: 'Burn', color: '#ef4444' });
-                      if ((debuffs?.slowUntil ?? 0) > now) icons.push({ k: 'slow', label: 'Slow', color: '#60a5fa' });
-                      if ((debuffs?.poisonUntil ?? 0) > now) icons.push({ k: 'poison', label: 'Poison', color: '#34d399' });
-                      if ((debuffs?.shockUntil ?? 0) > now) icons.push({ k: 'shock', label: 'Shock', color: '#facc15' });
+                      const icons: { k: string; label: string; color: string; border: string }[] = [];
+                      if ((debuffs?.burnUntil ?? 0) > now) icons.push({ k: 'burn', label: 'Burn', color: '#b91c1c', border: 'rgba(185,28,28,0.9)' });
+                      if ((debuffs?.slowUntil ?? 0) > now) icons.push({ k: 'slow', label: 'Slow', color: '#1d4ed8', border: 'rgba(29,78,216,0.9)' });
+                      if ((debuffs?.poisonUntil ?? 0) > now) icons.push({ k: 'poison', label: 'Poison', color: '#15803d', border: 'rgba(21,128,61,0.9)' });
+                      if ((debuffs?.shockUntil ?? 0) > now) icons.push({ k: 'shock', label: 'Shock', color: '#a16207', border: 'rgba(161,98,7,0.9)' });
                       if (icons.length === 0) return null;
                       return (
                         <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
@@ -307,12 +309,12 @@ export function EnemyMesh({
                                 width: 14,
                                 height: 14,
                                 borderRadius: 4,
-                                border: '1px solid rgba(248,113,113,0.9)',
-                                background: 'rgba(2,6,23,0.35)',
+                                border: `1px solid ${ic.border}`,
+                                background: 'rgba(2,6,23,0.5)',
                                 display: 'inline-flex',
                                 alignItems: 'center',
                                 justifyContent: 'center',
-                                boxShadow: '0 0 10px rgba(0,0,0,0.6)',
+                                boxShadow: `0 0 8px ${ic.border}, 0 0 4px rgba(0,0,0,0.8)`,
                                 color: ic.color,
                                 fontSize: 11,
                                 lineHeight: 1,
@@ -349,11 +351,11 @@ function BossAuraSpin() {
     <group ref={ref}>
       <mesh rotation={[-Math.PI / 2, 0, 0]}>
         <ringGeometry args={[0.95, 1.55, 64]} />
-        <meshBasicMaterial color="#2563eb" transparent opacity={0.35} side={THREE.DoubleSide} depthWrite={false} />
+        <meshBasicMaterial color="#1e3a8a" transparent opacity={0.65} side={THREE.DoubleSide} depthWrite={false} />
       </mesh>
       <mesh rotation={[-Math.PI / 2, Math.PI / 3, 0]}>
         <ringGeometry args={[0.75, 0.95, 64]} />
-        <meshBasicMaterial color="#1d4ed8" transparent opacity={0.3} side={THREE.DoubleSide} depthWrite={false} />
+        <meshBasicMaterial color="#172554" transparent opacity={0.6} side={THREE.DoubleSide} depthWrite={false} />
       </mesh>
     </group>
   );

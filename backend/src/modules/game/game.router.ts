@@ -70,21 +70,34 @@ gameRpgRouter.post(
 
     const kind = itemKindFromSlot(item.definition.slot);
     await prisma.$transaction(async (tx) => {
+      // Potions cannot be "equipped" — they live in the F1–F4 hotbar
+      // configured client-side. Reject the request gracefully.
+      if (kind === 'misc' || item.definition.slot.startsWith('potion_')) return;
+
       if (kind === 'weapon') {
-        const equippedWeapons = await tx.inventoryItem.count({
+        // Spec: 1 main-hand weapon + 1 off-hand. Equip swaps the older slot.
+        const equippedWeapons = await tx.inventoryItem.findMany({
           where: { characterId, equipped: true, definition: { slot: { contains: 'weapon' } } },
+          orderBy: { createdAt: 'asc' },
+          select: { id: true },
         });
-        // Allow up to 2 weapons; otherwise unequip the oldest equipped weapon to make room.
-        if (equippedWeapons >= 2) {
-          const oldest = await tx.inventoryItem.findFirst({
-            where: { characterId, equipped: true, definition: { slot: { contains: 'weapon' } } },
-            orderBy: { createdAt: 'asc' },
-            select: { id: true },
-          });
-          if (oldest) await tx.inventoryItem.update({ where: { id: oldest.id }, data: { equipped: false } });
+        if (equippedWeapons.length >= 2) {
+          const oldest = equippedWeapons[0]!;
+          await tx.inventoryItem.update({ where: { id: oldest.id }, data: { equipped: false } });
         }
-      } else if (kind !== 'misc') {
-        // Only one item per non-weapon kind.
+      } else if (kind === 'ring') {
+        // Spec: up to 2 rings equipped at once. Replace the oldest if full.
+        const equippedRings = await tx.inventoryItem.findMany({
+          where: { characterId, equipped: true, definition: { slot: 'ring' } },
+          orderBy: { createdAt: 'asc' },
+          select: { id: true },
+        });
+        if (equippedRings.length >= 2) {
+          const oldest = equippedRings[0]!;
+          await tx.inventoryItem.update({ where: { id: oldest.id }, data: { equipped: false } });
+        }
+      } else {
+        // Single-slot items (head/chest/legs/hands/feet/amulet).
         await tx.inventoryItem.updateMany({
           where: { characterId, equipped: true, definition: { slot: item.definition.slot } },
           data: { equipped: false },

@@ -13,7 +13,13 @@ import {
   type EnemyState,
 } from './combat.service.js';
 import { updateCharacterPosition } from '../player/player.service.js';
-import { getCharacterLootLuckPercent, grantRolledItem, rollItem } from '../item/item.service.js';
+import {
+  getCharacterLootLuckPercent,
+  grantRolledItem,
+  rollItem,
+  rollPotionForMonsterLevel,
+  POTION_HEAL_AMOUNT,
+} from '../item/item.service.js';
 import { progressCollectQuest, progressKillQuest } from '../quest/quest.service.js';
 import { clampWorldXZ } from '../shared/worldBounds.js';
 import { computeDefense, computeEvasion, computeMaxHp, computeMaxMana, sumEquippedAffixTotals } from '../player/stats.js';
@@ -508,6 +514,41 @@ async function applyEnemyDefeatRewards(io: Server, session: PlayerSession, enemy
     worldLoot.push(loot);
     io.to(session.characterId).emit('loot:spawned', { loot });
   }
+
+  // ─── Potion drop (independent of regular gear) ────────────────────────
+  // Both normal mobs and bosses can drop potions. Tier scales with monster
+  // level: lv1+ => tier1, lv20+ => tier2, lv40+ => tier3, lv60+ => tier4,
+  // lv80+ => tier5. 50/50 split between HP and MP.
+  const POTION_DROP_CHANCE_NORMAL = 0.45;
+  const POTION_DROP_CHANCE_BOSS = 1.0;
+  const potionDropChance = isBoss ? POTION_DROP_CHANCE_BOSS : POTION_DROP_CHANCE_NORMAL;
+  const potionDrops = isBoss ? 2 + Math.floor(Math.random() * 3) : 1;
+  for (let i = 0; i < potionDrops; i++) {
+    if (Math.random() > potionDropChance) continue;
+    const potion = await rollPotionForMonsterLevel(enemy.level || 1);
+    if (!potion) continue;
+    const ang = Math.random() * Math.PI * 2;
+    const rad = 0.4 + Math.random() * 1.0;
+    const x = clampWorldXZ(enemy.x + Math.cos(ang) * rad);
+    const z = clampWorldXZ(enemy.z + Math.sin(ang) * rad);
+    const id = randomUUID();
+    const loot: GroundLoot = {
+      id,
+      x,
+      z,
+      createdAt: Date.now(),
+      roll: {
+        definitionId: potion.definition.id,
+        name: potion.definition.name,
+        slot: potion.definition.slot,
+        level: potion.level,
+        rarity: potion.definition.rarity,
+        affixJson: '{}',
+      },
+    };
+    worldLoot.push(loot);
+    io.to(session.characterId).emit('loot:spawned', { loot });
+  }
 }
 
 export function attachRpgSocket(httpServer: HttpServer) {
@@ -614,6 +655,60 @@ export function attachRpgSocket(httpServer: HttpServer) {
       } catch {
         socket.emit('item:deleteFailed', { itemId });
       }
+    });
+
+    socket.on('item:use', async ({ itemId }: { itemId: string }) => {
+      const session = sessions.get(socket.id);
+      if (!session || session.hp <= 0) return;
+      const item = await prisma.inventoryItem.findFirst({
+        where: { id: itemId, characterId: session.characterId },
+        include: { definition: true },
+      });
+      if (!item) {
+        socket.emit('item:useFailed', { itemId, reason: 'not-found' });
+        return;
+      }
+      const heal = POTION_HEAL_AMOUNT[item.definitionId];
+      if (!heal) {
+        socket.emit('item:useFailed', { itemId, reason: 'not-consumable' });
+        return;
+      }
+      const src = {
+        level: session.level,
+        str: session.str,
+        agi: session.agi,
+        vit: session.vit,
+        mag: session.mag,
+      };
+      const maxHp = computeMaxHp(src);
+      const maxMana = computeMaxMana(src);
+      const nextHp = Math.min(maxHp, session.hp + (heal.hp ?? 0));
+      const nextMana = Math.min(maxMana, session.mana + (heal.mp ?? 0));
+
+      try {
+        await prisma.$transaction([
+          prisma.inventoryItem.delete({ where: { id: itemId } }),
+          prisma.character.update({
+            where: { id: session.characterId },
+            data: { hp: nextHp, mana: nextMana },
+          }),
+        ]);
+      } catch {
+        socket.emit('item:useFailed', { itemId, reason: 'db-error' });
+        return;
+      }
+
+      session.hp = nextHp;
+      session.mana = nextMana;
+      socket.emit('item:used', {
+        itemId,
+        hp: nextHp,
+        mana: nextMana,
+        maxHp,
+        maxMana,
+        healedHp: Math.max(0, heal.hp ?? 0),
+        healedMp: Math.max(0, heal.mp ?? 0),
+      });
     });
 
     socket.on('player:move', async ({ x, y, z }: { x: number; y: number; z: number }) => {
@@ -823,12 +918,32 @@ export function attachRpgSocket(httpServer: HttpServer) {
       },
     );
 
-    socket.on('skill:cast', async ({ enemyId, skillId }: { enemyId: string; skillId: string }) => {
+    socket.on(
+      'skill:cast',
+      async ({
+        enemyId,
+        skillId,
+        x,
+        z,
+      }: {
+        enemyId?: string;
+        skillId: string;
+        x?: number;
+        z?: number;
+      }) => {
       const session = sessions.get(socket.id);
       if (!session || session.hp <= 0) return;
       if (skillId === 'slash') return;
-      const enemy = worldEnemies.find((it) => it.id === enemyId && it.hp > 0);
-      if (!enemy) return;
+      const enemy = enemyId ? worldEnemies.find((it) => it.id === enemyId && it.hp > 0) : null;
+      const aimX =
+        typeof x === 'number' && Number.isFinite(x) ? x : enemy ? enemy.x : undefined;
+      const aimZ =
+        typeof z === 'number' && Number.isFinite(z) ? z : enemy ? enemy.z : undefined;
+      if (aimX == null || aimZ == null) return;
+
+      // Free-aim safety: must be within 30×30 around the player (server authoritative).
+      const FREE_AIM_HALF = 15;
+      if (Math.abs(aimX - session.x) > FREE_AIM_HALF || Math.abs(aimZ - session.z) > FREE_AIM_HALF) return;
       const now = Date.now();
       const readyAt = session.cooldowns[skillId] ?? 0;
       if (now < readyAt) return;
@@ -850,6 +965,129 @@ export function attachRpgSocket(httpServer: HttpServer) {
         const critRate = PLAYER_BASE_CRIT_RATE + (Number.isFinite(critRatePctBonus) ? critRatePctBonus / 100 : 0);
         const critMult =
           1 + (((PLAYER_BASE_CRIT_MULT - 1) * 100 + (Number.isFinite(critDamagePctBonus) ? critDamagePctBonus : 0)) / 100);
+
+        const fxSeq = randomUUID();
+
+        // ─── Firebolt: projectile + 5×5 AOE explosion at impact ─────────────
+        if (skillId === 'firebolt') {
+          const FIREBOLT_RADIUS = 2.5; // 5×5 area (radius ~2.5m)
+          const PROJECTILE_SPEED = 14; // m/s
+          const dx = aimX - session.x;
+          const dz = aimZ - session.z;
+          const dist = Math.hypot(dx, dz);
+          const travelMs = Math.max(120, Math.min(900, Math.round((dist / PROJECTILE_SPEED) * 1000)));
+          io.to(session.characterId).emit('skill:fxFirebolt', {
+            seq: fxSeq,
+            fromX: session.x,
+            fromZ: session.z,
+            toX: aimX,
+            toZ: aimZ,
+            travelMs,
+            radius: FIREBOLT_RADIUS,
+            mana: session.mana,
+          });
+          setTimeout(() => {
+            const nowImpact = Date.now();
+            const targets = worldEnemies.filter(
+              (e) => e.hp > 0 && Math.hypot(e.x - aimX, e.z - aimZ) <= FIREBOLT_RADIUS,
+            );
+            for (const target of targets) {
+              const { damage, missed, didCrit, byElement } = totalDamageToTarget(bundle, target, accuracy, {
+                critRate,
+                critMult,
+              });
+              if (!missed && byElement) applyElementalDebuffsToEnemy(target, byElement, bundle, nowImpact);
+              target.hp = Math.max(0, target.hp - damage);
+              if (target.hp <= 0) markEnemyDead(target, nowImpact);
+              io.to(session.characterId).emit('combat:resolved', {
+                enemyId: target.id,
+                enemyHp: target.hp,
+                damage,
+                didCrit: didCrit ?? false,
+                skillId,
+                mana: session.mana,
+                missed,
+                diedAt: target.diedAt,
+              });
+              if (target.hp <= 0) {
+                void applyEnemyDefeatRewards(io, session, target);
+              }
+            }
+          }, travelMs);
+          return;
+        }
+
+        // ─── Blizzard: 5×5 area, 1 ice shard every 200ms for 2s ─────────────
+        if (skillId === 'blizzard') {
+          const BLIZZARD_HALF = 2.5; // half of 5×5 area
+          const SHARD_RADIUS = 1.5; // 3×3 area (radius ~1.5m)
+          const TICK_MS = 200;
+          const DURATION_MS = 2000;
+          const TICK_COUNT = Math.floor(DURATION_MS / TICK_MS);
+          // Per-tick damage: split bundle evenly across all ticks, then scale per shard as requested.
+          const SHARD_DAMAGE_MULT = 1.5;
+          const tickBundle = {
+            physic: Math.round((bundle.physic / TICK_COUNT) * SHARD_DAMAGE_MULT),
+            elemental: {
+              fire: Math.round((bundle.elemental.fire / TICK_COUNT) * SHARD_DAMAGE_MULT),
+              cold: Math.round((bundle.elemental.cold / TICK_COUNT) * SHARD_DAMAGE_MULT),
+              lightning: Math.round((bundle.elemental.lightning / TICK_COUNT) * SHARD_DAMAGE_MULT),
+              poison: Math.round((bundle.elemental.poison / TICK_COUNT) * SHARD_DAMAGE_MULT),
+            },
+          };
+          io.to(session.characterId).emit('skill:fxBlizzard', {
+            seq: fxSeq,
+            centerX: aimX,
+            centerZ: aimZ,
+            half: BLIZZARD_HALF,
+            tickMs: TICK_MS,
+            durationMs: DURATION_MS,
+            mana: session.mana,
+          });
+          for (let i = 0; i < TICK_COUNT; i++) {
+            setTimeout(() => {
+              const nowTick = Date.now();
+              const sx = aimX + (Math.random() * 2 - 1) * BLIZZARD_HALF;
+              const sz = aimZ + (Math.random() * 2 - 1) * BLIZZARD_HALF;
+              io.to(session.characterId).emit('skill:fxBlizzardShard', {
+                seq: fxSeq,
+                index: i,
+                x: sx,
+                z: sz,
+                radius: SHARD_RADIUS,
+              });
+              const targets = worldEnemies.filter(
+                (e) => e.hp > 0 && Math.hypot(e.x - sx, e.z - sz) <= SHARD_RADIUS,
+              );
+              for (const target of targets) {
+                const { damage, missed, didCrit, byElement } = totalDamageToTarget(tickBundle, target, accuracy, {
+                  critRate,
+                  critMult,
+                });
+                if (!missed && byElement) applyElementalDebuffsToEnemy(target, byElement, tickBundle, nowTick);
+                target.hp = Math.max(0, target.hp - damage);
+                if (target.hp <= 0) markEnemyDead(target, nowTick);
+                io.to(session.characterId).emit('combat:resolved', {
+                  enemyId: target.id,
+                  enemyHp: target.hp,
+                  damage,
+                  didCrit: didCrit ?? false,
+                  skillId,
+                  mana: session.mana,
+                  missed,
+                  diedAt: target.diedAt,
+                });
+                if (target.hp <= 0) {
+                  void applyEnemyDefeatRewards(io, session, target);
+                }
+              }
+            }, i * TICK_MS);
+          }
+          return;
+        }
+
+        // ─── Default: single-target (legacy) ────────────────────────────────
+        if (!enemy) return;
         for (const target of [enemy]) {
           const { damage, missed, didCrit, byElement } = totalDamageToTarget(bundle, target, accuracy, {
             critRate,
@@ -875,7 +1113,8 @@ export function attachRpgSocket(httpServer: HttpServer) {
       } catch {
         socket.emit('error:game', { message: 'invalid skill cast' });
       }
-    });
+    },
+    );
 
     socket.on('disconnect', () => {
       sessions.delete(socket.id);

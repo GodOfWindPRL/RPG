@@ -5,7 +5,22 @@ import type { EquipmentSlot } from '../core/items';
 
 /** Giới hạn nhẹ để tránh DOM/Html chồng quá dày; không ép DPR hay giảm mượt camera. */
 const MAX_WORLD_POPUPS = 24;
-const EQUIP_SLOTS: EquipmentSlot[] = ['head', 'chest', 'legs', 'hands', 'feet', 'weaponLeft', 'weaponRight', 'ring', 'amulet'];
+const EQUIP_SLOTS: EquipmentSlot[] = [
+  'head',
+  'chest',
+  'legs',
+  'hands',
+  'feet',
+  'weaponLeft',
+  'weaponRight',
+  'ring1',
+  'ring2',
+  'amulet',
+];
+
+/** Số ô bar dưới đáy: 6 skill (phím 1-6) + 4 item (F1-F4). */
+export const SKILL_BAR_SIZE = 6;
+export const ITEM_BAR_SIZE = 4;
 
 export type EquipmentLayout = Record<EquipmentSlot, string | null>;
 
@@ -54,8 +69,47 @@ interface GameState {
   slashFx: { seq: number; x: number; z: number; yaw: number; durationMs?: number } | null;
   /** Server ack for slashStart; used to gate slashHit when spam clicking. */
   slashAcceptedSwingId: number | null;
+  /** Fireball projectiles in flight; cleared by FireBoltFx after explosion fades. */
+  fireboltFx: {
+    seq: number;
+    fromX: number;
+    fromZ: number;
+    toX: number;
+    toZ: number;
+    /** Time the projectile was launched (Date.now()). */
+    startMs: number;
+    /** Time it takes to reach impact, in ms. */
+    travelMs: number;
+    /** Explosion radius in meters. */
+    radius: number;
+  }[];
+  /** Blizzard storms currently active; cleared after duration + fade. */
+  blizzardFx: {
+    seq: number;
+    centerX: number;
+    centerZ: number;
+    /** When the storm started (Date.now()). */
+    startMs: number;
+    /** Storm duration (shards stop spawning after this). */
+    durationMs: number;
+    /** Half-width of the 5×5 area. */
+    half: number;
+  }[];
+  /** Latest mouse cursor XZ position on ground (for free-aim skills). */
+  cursorWorldXZ: { x: number; z: number } | null;
   /** Debuffs currently affecting the player (for HUD icons). */
   playerDebuffs: { burnUntil?: number; slowUntil?: number; poisonUntil?: number; shockUntil?: number } | null;
+  /** Hotbar gắn skill cho phím 1-6 (lưu skill.id). null = ô trống. */
+  skillBar: (string | null)[];
+  /** Hotbar gắn item cho phím F1-F4 (lưu inventoryItem.id). null = ô trống. */
+  itemBar: (string | null)[];
+  /** Khi đang mở picker chọn skill/item, các phím tắt 1-6/F1-F4 nên bị tắt. */
+  hotbarPickerOpen: boolean;
+  setSkillBar: (bar: (string | null)[]) => void;
+  setItemBar: (bar: (string | null)[]) => void;
+  setSkillBarSlot: (slot: number, skillId: string | null) => void;
+  setItemBarSlot: (slot: number, itemId: string | null) => void;
+  setHotbarPickerOpen: (open: boolean) => void;
   setToken: (token: string | null) => void;
   setCharacter: (character: Character | null) => void;
   setEnemies: (enemies: Enemy[]) => void;
@@ -85,6 +139,18 @@ interface GameState {
   triggerSlashFx: (x: number, z: number, yaw: number, durationMs?: number) => void;
   clearSlashFx: () => void;
   setSlashAcceptedSwingId: (swingId: number | null) => void;
+  spawnFireboltFx: (fx: {
+    fromX: number;
+    fromZ: number;
+    toX: number;
+    toZ: number;
+    travelMs: number;
+    radius: number;
+  }) => void;
+  removeFireboltFx: (seq: number) => void;
+  spawnBlizzardFx: (fx: { centerX: number; centerZ: number; durationMs: number; half: number }) => void;
+  removeBlizzardFx: (seq: number) => void;
+  setCursorWorldXZ: (pos: { x: number; z: number } | null) => void;
   setPlayerDebuffs: (debuffs: GameState['playerDebuffs']) => void;
   setPlayerFacingYaw: (yaw: number) => void;
   moveBy: (dx: number, dz: number) => void;
@@ -109,7 +175,30 @@ export const useGameStore = create<GameState>((set) => ({
   playerFacingYaw: 0,
   slashFx: null,
   slashAcceptedSwingId: null,
+  fireboltFx: [],
+  blizzardFx: [],
+  cursorWorldXZ: null,
   playerDebuffs: null,
+  skillBar: Array.from({ length: SKILL_BAR_SIZE }, () => null),
+  itemBar: Array.from({ length: ITEM_BAR_SIZE }, () => null),
+  hotbarPickerOpen: false,
+  setSkillBar: (bar) =>
+    set(() => ({
+      skillBar: Array.from({ length: SKILL_BAR_SIZE }, (_, i) => (typeof bar[i] === 'string' ? bar[i] : null)),
+    })),
+  setItemBar: (bar) =>
+    set(() => ({
+      itemBar: Array.from({ length: ITEM_BAR_SIZE }, (_, i) => (typeof bar[i] === 'string' ? bar[i] : null)),
+    })),
+  setSkillBarSlot: (slot, skillId) =>
+    set((state) => ({
+      skillBar: state.skillBar.map((v, i) => (i === slot ? skillId : v)),
+    })),
+  setItemBarSlot: (slot, itemId) =>
+    set((state) => ({
+      itemBar: state.itemBar.map((v, i) => (i === slot ? itemId : v)),
+    })),
+  setHotbarPickerOpen: (hotbarPickerOpen) => set({ hotbarPickerOpen }),
   setToken: (token) => set({ token }),
   setCharacter: (character) => set({ character }),
   setEnemies: (enemies) =>
@@ -176,6 +265,25 @@ export const useGameStore = create<GameState>((set) => ({
     })),
   clearSlashFx: () => set({ slashFx: null }),
   setSlashAcceptedSwingId: (slashAcceptedSwingId) => set({ slashAcceptedSwingId }),
+  spawnFireboltFx: (fx) =>
+    set((state) => ({
+      fireboltFx: [
+        ...state.fireboltFx,
+        { seq: Date.now() + Math.floor(Math.random() * 1000), startMs: Date.now(), ...fx },
+      ],
+    })),
+  removeFireboltFx: (seq) =>
+    set((state) => ({ fireboltFx: state.fireboltFx.filter((it) => it.seq !== seq) })),
+  spawnBlizzardFx: (fx) =>
+    set((state) => ({
+      blizzardFx: [
+        ...state.blizzardFx,
+        { seq: Date.now() + Math.floor(Math.random() * 1000), startMs: Date.now(), ...fx },
+      ],
+    })),
+  removeBlizzardFx: (seq) =>
+    set((state) => ({ blizzardFx: state.blizzardFx.filter((it) => it.seq !== seq) })),
+  setCursorWorldXZ: (cursorWorldXZ) => set({ cursorWorldXZ }),
   setPlayerDebuffs: (playerDebuffs) => set({ playerDebuffs }),
   setPlayerFacingYaw: (playerFacingYaw) => set({ playerFacingYaw }),
   moveBy: (dx, dz) =>

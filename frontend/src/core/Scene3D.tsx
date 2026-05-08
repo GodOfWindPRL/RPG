@@ -5,6 +5,8 @@ import * as THREE from 'three';
 import { PlayerMesh } from '../entities/PlayerMesh';
 import { EnemyMesh } from '../entities/EnemyMesh';
 import { SlashArcFx } from '../entities/SlashArcFx';
+import { FireBoltFx } from '../entities/FireBoltFx';
+import { BlizzardFx } from '../entities/BlizzardFx';
 import { useGameStore } from '../systems/gameStore';
 import { CAMERA_BASE_OFFSET, useCameraSettingsStore } from '../systems/cameraSettingsStore';
 import { MAP_SIZE } from './world';
@@ -65,7 +67,7 @@ function FloatingPopup({
   const px = 22 + (fontSize ?? 1.2) * 14;
   return (
     <group ref={ref} position={[x, y ?? 2, z]}>
-      <Html center distanceFactor={18} style={{ pointerEvents: 'none', userSelect: 'none' }} zIndexRange={[200, 0]}>
+      <Html center distanceFactor={18} style={{ pointerEvents: 'none', userSelect: 'none' }} zIndexRange={[15, 0]}>
         <div
           className={variant === 'crit' ? 'world-popup-crit' : undefined}
           style={{
@@ -96,6 +98,41 @@ function FollowCamera({ x, z }: { x: number; z: number }) {
   return null;
 }
 
+function MouseGroundTracker() {
+  const { camera, gl } = useThree();
+  const raycasterRef = useRef(new THREE.Raycaster());
+  const planeRef = useRef(new THREE.Plane(new THREE.Vector3(0, 1, 0), 0)); // y=0
+  const ndcRef = useRef(new THREE.Vector2());
+  const hitRef = useRef(new THREE.Vector3());
+  const setCursorWorldXZ = useGameStore((s) => s.setCursorWorldXZ);
+
+  useEffect(() => {
+    const el = gl.domElement;
+    function onMove(ev: PointerEvent) {
+      const rect = el.getBoundingClientRect();
+      const x = ((ev.clientX - rect.left) / rect.width) * 2 - 1;
+      const y = -(((ev.clientY - rect.top) / rect.height) * 2 - 1);
+      ndcRef.current.set(x, y);
+      const raycaster = raycasterRef.current;
+      raycaster.setFromCamera(ndcRef.current, camera as THREE.PerspectiveCamera);
+      const hit = raycaster.ray.intersectPlane(planeRef.current, hitRef.current);
+      if (!hit) return;
+      setCursorWorldXZ({ x: hit.x, z: hit.z });
+    }
+    function onLeave() {
+      setCursorWorldXZ(null);
+    }
+    el.addEventListener('pointermove', onMove);
+    el.addEventListener('pointerleave', onLeave);
+    return () => {
+      el.removeEventListener('pointermove', onMove);
+      el.removeEventListener('pointerleave', onLeave);
+    };
+  }, [camera, gl, setCursorWorldXZ]);
+
+  return null;
+}
+
 export function Scene3D() {
   const character = useGameStore((s) => s.character);
   const enemies = useGameStore((s) => s.enemies);
@@ -104,6 +141,8 @@ export function Scene3D() {
   const worldPopups = useGameStore((s) => s.worldPopups);
   const groundLoot = useGameStore((s) => s.groundLoot);
   const slashFx = useGameStore((s) => s.slashFx);
+  const fireboltFx = useGameStore((s) => s.fireboltFx);
+  const blizzardFx = useGameStore((s) => s.blizzardFx);
   const playerFacingYaw = useGameStore((s) => s.playerFacingYaw);
   const cameraFov = useCameraSettingsStore((s) => s.fov);
   const distanceScale = useCameraSettingsStore((s) => s.distanceScale);
@@ -115,6 +154,7 @@ export function Scene3D() {
   return (
     <Canvas style={{ width: '100%', height: '100%' }} shadows="percentage" camera={{ position: camPos, fov: cameraFov }}>
       <CameraFovSync />
+      <MouseGroundTracker />
       <ambientLight intensity={0.55} />
       <hemisphereLight args={['#cbd5e1', '#0f172a', 0.45]} />
       <directionalLight intensity={1.1} position={[6, 14, 4]} castShadow />
@@ -134,9 +174,33 @@ export function Scene3D() {
           durationSec={Math.max(0.2, Math.min(2.5, (slashFx.durationMs ?? 1000) / 1000))}
         />
       )}
+      {fireboltFx.map((fx) => (
+        <FireBoltFx
+          key={fx.seq}
+          seq={fx.seq}
+          fromX={fx.fromX}
+          fromZ={fx.fromZ}
+          toX={fx.toX}
+          toZ={fx.toZ}
+          startMs={fx.startMs}
+          travelMs={fx.travelMs}
+          radius={fx.radius}
+        />
+      ))}
+      {blizzardFx.map((fx) => (
+        <BlizzardFx
+          key={fx.seq}
+          seq={fx.seq}
+          centerX={fx.centerX}
+          centerZ={fx.centerZ}
+          startMs={fx.startMs}
+          durationMs={fx.durationMs}
+          half={fx.half}
+        />
+      ))}
       {groundLoot.map((l) => (
         <group key={l.id} position={[l.x, 0.05, l.z]}>
-          <Html center distanceFactor={18} style={{ pointerEvents: 'auto' }} zIndexRange={[220, 0]}>
+          <Html center distanceFactor={18} style={{ pointerEvents: 'auto' }} zIndexRange={[15, 0]}>
             <button
               type="button"
               onClick={(ev) => {

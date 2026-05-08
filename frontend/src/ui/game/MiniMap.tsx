@@ -48,7 +48,7 @@ export function MiniMap() {
           return (
             <div
               key={enemy.id}
-              className="mini-map-dot mini-map-dot-enemy"
+              className={`mini-map-dot ${enemy.isBoss ? 'mini-map-dot-boss' : 'mini-map-dot-enemy'}`}
               style={{ left: `${left}px`, top: `${top}px` }}
             />
           );

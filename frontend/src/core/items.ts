@@ -11,8 +11,12 @@ export type EquipmentSlot =
   | 'feet'
   | 'weaponLeft'
   | 'weaponRight'
-  | 'ring'
+  | 'ring1'
+  | 'ring2'
   | 'amulet';
+
+/** Potion sub-kind (HP heal vs MP restore), parsed from backend slot. */
+export type PotionKind = 'hp' | 'mp' | null;
 
 export type UiItem = {
   id: string;
@@ -23,7 +27,21 @@ export type UiItem = {
   level?: number;
   /** Chỉ dùng để hiển thị / cộng Luck % từ server (drop); opt base + extra vẫn theo UI. */
   affixJson?: string;
+  /** Potion-only metadata (kind + heal/restore amount). */
+  potion?: { kind: 'hp' | 'mp'; amount: number };
 };
+
+/** Heal amount per potion level (must mirror backend POTION_HEAL_AMOUNT). */
+const HP_POTION_AMOUNTS = [40, 100, 250, 600, 2000];
+const MP_POTION_AMOUNTS = [20, 50, 125, 300, 1000];
+
+export function potionMetaFromSlot(slot: string, level: number): UiItem['potion'] {
+  const sl = (slot ?? '').toLowerCase();
+  const lv = Math.max(1, Math.min(5, Math.floor(level || 1)));
+  if (sl === 'potion_hp') return { kind: 'hp', amount: HP_POTION_AMOUNTS[lv - 1] ?? 0 };
+  if (sl === 'potion_mp') return { kind: 'mp', amount: MP_POTION_AMOUNTS[lv - 1] ?? 0 };
+  return undefined;
+}
 
 export type OptLine = {
   key: string;
@@ -302,20 +320,23 @@ export function itemKindFromBackendSlot(slotRaw: string): ItemKind {
 
 export function mapBackendItemToUi(it: InventoryItem): UiItem {
   const kind = itemKindFromBackendSlot(it.definition.slot);
+  const potion = kind === 'potion' ? potionMetaFromSlot(it.definition.slot, it.level) : undefined;
+  const icon = potion?.kind === 'hp' ? '🧪' : potion?.kind === 'mp' ? '💧' : emojiForKind(kind);
   return {
     id: it.id,
     name: it.definition.name,
     kind,
-    icon: emojiForKind(kind),
+    icon,
     rarity: it.rarity,
     level: it.level,
     affixJson: it.affixJson,
+    ...(potion ? { potion } : {}),
   };
 }
 
 export function slotAccepts(slot: EquipmentSlot, item: UiItem): boolean {
   if (slot === 'weaponLeft' || slot === 'weaponRight') return item.kind === 'weapon';
-  if (slot === 'ring') return item.kind === 'ring';
+  if (slot === 'ring1' || slot === 'ring2') return item.kind === 'ring';
   if (slot === 'amulet') return item.kind === 'amulet';
   return item.kind === slot;
 }

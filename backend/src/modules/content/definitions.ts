@@ -16,18 +16,44 @@ export const skillDefinitions = [
   {
     id: 'firebolt',
     name: 'Firebolt',
-    description: 'Fire magic using base magic damage.',
+    description: 'Hurl a fireball that explodes on impact, damaging all enemies in a 5×5 area.',
     requiredLevel: 2,
     requiredSkill: null,
     baseDamage: 60,
     manaCost: 12,
-    cooldownMs: 2600,
+    cooldownMs: 0,
     damageKind: SkillDamageKind.MAGIC,
     element: SkillElement.FIRE,
+  },
+  {
+    id: 'blizzard',
+    name: 'Blizzard',
+    description: 'Conjure a 5×5 ice storm. Every 0.2s an ice shard falls in the area for 2s.',
+    requiredLevel: 4,
+    requiredSkill: null,
+    baseDamage: 22,
+    manaCost: 30,
+    cooldownMs: 0,
+    damageKind: SkillDamageKind.MAGIC,
+    element: SkillElement.COLD,
   },
 ];
 
 export const itemDefinitions = [
+  // ─── Consumable potions (HP / MP, 5 levels each) ────────────────────────
+  // basePower is repurposed to hold the heal amount. They are NOT rolled by
+  // the regular rollItem flow — see rollPotionForMonsterLevel().
+  { id: 'hp_potion_1', name: 'Minor Healing Flask', slot: 'potion_hp', basePower: 40, minLevel: 1, maxLevel: 99, rarity: ItemRarity.WHITE, icon: 'potion_hp_1' },
+  { id: 'hp_potion_2', name: 'Healing Flask', slot: 'potion_hp', basePower: 100, minLevel: 1, maxLevel: 99, rarity: ItemRarity.WHITE, icon: 'potion_hp_2' },
+  { id: 'hp_potion_3', name: 'Greater Healing Flask', slot: 'potion_hp', basePower: 250, minLevel: 1, maxLevel: 99, rarity: ItemRarity.WHITE, icon: 'potion_hp_3' },
+  { id: 'hp_potion_4', name: 'Major Healing Flask', slot: 'potion_hp', basePower: 600, minLevel: 1, maxLevel: 99, rarity: ItemRarity.WHITE, icon: 'potion_hp_4' },
+  { id: 'hp_potion_5', name: 'Grand Healing Elixir', slot: 'potion_hp', basePower: 2000, minLevel: 1, maxLevel: 99, rarity: ItemRarity.WHITE, icon: 'potion_hp_5' },
+  { id: 'mp_potion_1', name: 'Minor Mana Flask', slot: 'potion_mp', basePower: 20, minLevel: 1, maxLevel: 99, rarity: ItemRarity.WHITE, icon: 'potion_mp_1' },
+  { id: 'mp_potion_2', name: 'Mana Flask', slot: 'potion_mp', basePower: 50, minLevel: 1, maxLevel: 99, rarity: ItemRarity.WHITE, icon: 'potion_mp_2' },
+  { id: 'mp_potion_3', name: 'Greater Mana Flask', slot: 'potion_mp', basePower: 125, minLevel: 1, maxLevel: 99, rarity: ItemRarity.WHITE, icon: 'potion_mp_3' },
+  { id: 'mp_potion_4', name: 'Major Mana Flask', slot: 'potion_mp', basePower: 300, minLevel: 1, maxLevel: 99, rarity: ItemRarity.WHITE, icon: 'potion_mp_4' },
+  { id: 'mp_potion_5', name: 'Grand Mana Elixir', slot: 'potion_mp', basePower: 1000, minLevel: 1, maxLevel: 99, rarity: ItemRarity.WHITE, icon: 'potion_mp_5' },
+
   { id: 'rusty_sword', name: 'Rusty Sword', slot: 'weapon', basePower: 8, minLevel: 1, maxLevel: 4, rarity: ItemRarity.WHITE, icon: 'sword' },
   { id: 'iron_sabre', name: 'Iron Sabre', slot: 'weapon', basePower: 11, minLevel: 2, maxLevel: 6, rarity: ItemRarity.GREEN, icon: 'sword' },
   { id: 'azure_dagger', name: 'Azure Dagger', slot: 'weapon', basePower: 13, minLevel: 2, maxLevel: 7, rarity: ItemRarity.BLUE, icon: 'sword' },
