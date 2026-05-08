@@ -9,6 +9,7 @@ import {
   computeCorePhysDamage,
   computeDefense,
   computeEvasion,
+  computeActiveSetBonusTotals,
   type StatSource,
 } from '../player/stats.js';
 
@@ -17,6 +18,13 @@ export interface ElementalTotals {
   cold: number;
   lightning: number;
   poison: number;
+}
+
+export interface ElementalPctTotals {
+  firePct: number;
+  coldPct: number;
+  lightningPct: number;
+  poisonPct: number;
 }
 
 export interface DamageBundle {
@@ -45,16 +53,24 @@ export interface EnemyState {
   isBoss?: boolean;
   /** Server timestamp (ms) when hp first reached 0; used for corpse lifetime. */
   diedAt?: number;
+  debuffs?: {
+    burnUntil?: number;
+    slowUntil?: number;
+    poisonUntil?: number;
+    shockUntil?: number;
+    poisonDps?: number;
+    nextPoisonTickAt?: number;
+  };
 }
 
 const MOB_COUNT = 150;
 
-/** Quái thường: 200 HP, 10 def/evasion/accuracy, 30 physic damage (boss scale riêng). */
+/** Quái thường (base): boss scale riêng. */
 const MOB_BASE = {
   maxHp: 200,
   defense: 10,
-  evasion: 10,
-  accuracy: 200,
+  evasion: 150,
+  accuracy: 60,
   physicAttack: 100,
   fireResist: 0,
   coldResist: 0,
@@ -100,25 +116,28 @@ export function makeDungeonEnemies(dungeonLevel: number): EnemyState[] {
   const enemies: EnemyState[] = [];
   for (let i = 0; i < MOB_COUNT; i++) {
     const { x, z } = randomMobPosition(H);
-    const isBoss = i === MOB_COUNT - 1;
-    const tier = isBoss ? 1.8 : 1 + dungeonLevel * 0.04 + (i % 5) * 0.02;
-    const hp = Math.round(MOB_BASE.maxHp * tier);
+    const isBoss = Math.random() < 0.1;
+    const tier = 1 + dungeonLevel * 0.04 + (i % 5) * 0.02;
+    const baseHp = Math.round(MOB_BASE.maxHp * tier);
+    const hp = isBoss ? baseHp * 10 : baseHp;
+    const baseAtk = Math.round(MOB_BASE.physicAttack * tier);
+    const atk = isBoss ? Math.round(baseAtk * 2) : baseAtk;
     enemies.push({
-      id: isBoss ? 'boss_ember' : `mob_${i + 1}`,
-      type: isBoss ? 'ember_lord' : 'wolf',
-      name: isBoss ? 'Ember Lord' : `Ash Wolf ${i + 1}`,
+      id: isBoss ? `boss_${i + 1}` : `mob_${i + 1}`,
+      type: 'zombie',
+      name: 'Zombie',
       hp,
       maxHp: hp,
-      physicAttack: Math.round(MOB_BASE.physicAttack * tier),
-      exp: isBoss ? 400 : 25,
-      level: isBoss ? dungeonLevel + 1 : dungeonLevel,
+      physicAttack: atk,
+      exp: isBoss ? 250 : 25,
+      level: dungeonLevel,
       defense: Math.round(MOB_BASE.defense * tier),
       evasion: Math.round(MOB_BASE.evasion * tier),
       accuracy: Math.round(MOB_BASE.accuracy * tier),
-      fireResist: isBoss ? 35 : MOB_BASE.fireResist,
-      coldResist: isBoss ? 15 : MOB_BASE.coldResist,
-      lightningResist: isBoss ? 15 : MOB_BASE.lightningResist,
-      poisonResist: isBoss ? 20 : MOB_BASE.poisonResist,
+      fireResist: MOB_BASE.fireResist,
+      coldResist: MOB_BASE.coldResist,
+      lightningResist: MOB_BASE.lightningResist,
+      poisonResist: MOB_BASE.poisonResist,
       x,
       z,
       isBoss: isBoss ? true : undefined,
@@ -151,9 +170,12 @@ function addElement(target: ElementalTotals, el: SkillElement, amount: number) {
   }
 }
 
-export function parseWeaponAffixes(items: InventoryItem[]): { physic: number; elemental: ElementalTotals } {
+export function parseWeaponAffixes(
+  items: InventoryItem[],
+): { physic: number; elemental: ElementalTotals; elementalPct: ElementalPctTotals } {
   let physic = 0;
   const elemental = emptyElemental();
+  const elementalPct: ElementalPctTotals = { firePct: 0, coldPct: 0, lightningPct: 0, poisonPct: 0 };
   for (const item of items.filter((it) => it.equipped)) {
     try {
       const o = JSON.parse(item.affixJson) as Record<string, number>;
@@ -162,11 +184,15 @@ export function parseWeaponAffixes(items: InventoryItem[]): { physic: number; el
       elemental.cold += o.coldDamage ?? 0;
       elemental.lightning += o.lightningDamage ?? 0;
       elemental.poison += o.poisonDamage ?? 0;
+      elementalPct.firePct += o.fireDamagePct ?? 0;
+      elementalPct.coldPct += o.coldDamagePct ?? 0;
+      elementalPct.lightningPct += o.lightningDamagePct ?? 0;
+      elementalPct.poisonPct += o.poisonDamagePct ?? 0;
     } catch {
       /* skip */
     }
   }
-  return { physic, elemental };
+  return { physic, elemental, elementalPct };
 }
 
 /** Hit chance = min(1, Acc / Evasion). Evasion 0 → luôn trúng. */
@@ -196,6 +222,7 @@ export function totalDamageToTarget(
   damage: number;
   missed: boolean;
   didCrit?: boolean;
+  byElement?: { fire: number; cold: number; lightning: number; poison: number; physic: number };
 } {
   const grossPhys = Number.isFinite(bundle.physic) ? Math.max(0, bundle.physic) : 0;
   const grossElemFire = Number.isFinite(bundle.elemental.fire) ? Math.max(0, bundle.elemental.fire) : 0;
@@ -209,17 +236,25 @@ export function totalDamageToTarget(
     return { damage: 0, missed: true };
   }
 
+  const burnActive = (enemy.debuffs?.burnUntil ?? 0) > Date.now();
+  const effFireRes = burnActive ? enemy.fireResist - 10 : enemy.fireResist;
+  const phys = physicDamageMitigated(grossPhys, enemy.defense);
+  const fire = elementalAfterResist(grossElemFire, effFireRes);
+  const cold = elementalAfterResist(grossElemCold, enemy.coldResist);
+  const lightning = elementalAfterResist(grossElemLightning, enemy.lightningResist);
+  const poison = elementalAfterResist(grossElemPoison, enemy.poisonResist);
   let total = 0;
-  total += physicDamageMitigated(grossPhys, enemy.defense);
-  total += elementalAfterResist(grossElemFire, enemy.fireResist);
-  total += elementalAfterResist(grossElemCold, enemy.coldResist);
-  total += elementalAfterResist(grossElemLightning, enemy.lightningResist);
-  total += elementalAfterResist(grossElemPoison, enemy.poisonResist);
+  total += phys;
+  total += fire;
+  total += cold;
+  total += lightning;
+  total += poison;
   // Defensive fallback: if hit connects and there is gross damage, at least chip 1 HP.
   if (total <= 0) total = 1;
 
   const { damage, didCrit } = applyVarianceAndCrit(total, opts?.critRate ?? DEFAULT_CRIT_RATE, opts?.critMult ?? DEFAULT_CRIT_MULT);
-  return { damage: Math.max(1, damage), missed: false, didCrit };
+  // For debuffs we only need approximate per-element amounts (pre-variance/crit).
+  return { damage: Math.max(1, damage), missed: false, didCrit, byElement: { fire, cold, lightning, poison, physic: phys } };
 }
 
 function buildBasicAttackBundle(c: StatSource, weaponPhys: number, weaponElem: ElementalTotals): DamageBundle {
@@ -253,16 +288,36 @@ function buildSkillBundle(
   return { physic: weaponPhys, elemental: elem };
 }
 
+function skillAttackDamageMultiplier(skillId: string, learnedLevel: number): number {
+  const lv = Math.max(1, Math.min(20, Math.floor(learnedLevel || 1)));
+  if (skillId === 'slash') {
+    // Slash: attack damage 100% at lv1; +5% per level.
+    return 1 + (lv - 1) * 0.05;
+  }
+  return 1;
+}
+
 export async function calculateBasicAttack(characterId: string) {
   const character = await prisma.character.findUnique({
     where: { id: characterId },
     include: { inventoryItems: true },
   });
   if (!character) throw new Error('Character not found');
-  const { physic, elemental } = parseWeaponAffixes(character.inventoryItems);
-  const bundle = buildBasicAttackBundle(character, physic, elemental);
-  const acc = computeAccuracy(character);
-  return { bundle, accuracy: acc };
+  const set = computeActiveSetBonusTotals(character.inventoryItems as any);
+  const { physic, elemental, elementalPct } = parseWeaponAffixes(character.inventoryItems);
+  const elemScaled = {
+    fire: Math.round(elemental.fire * (1 + (elementalPct.firePct + set.elemPct.fire) / 100)),
+    cold: Math.round(elemental.cold * (1 + (elementalPct.coldPct + set.elemPct.cold) / 100)),
+    lightning: Math.round(elemental.lightning * (1 + (elementalPct.lightningPct + set.elemPct.lightning) / 100)),
+    poison: Math.round(elemental.poison * (1 + (elementalPct.poisonPct + set.elemPct.poison) / 100)),
+  };
+  const bundle0 = buildBasicAttackBundle(character, physic, elemScaled);
+  const bundle = {
+    physic: Math.round(bundle0.physic * (1 + set.corePhysDamagePct / 100)),
+    elemental: { ...bundle0.elemental },
+  };
+  const acc = Math.round(computeAccuracy(character) * (1 + set.accuracyPct / 100));
+  return { bundle, accuracy: acc, critRatePctBonus: set.critRatePct, critDamagePctBonus: set.critDamagePct };
 }
 
 export async function calculateSkillDamage(characterId: string, skillId: string) {
@@ -276,10 +331,69 @@ export async function calculateSkillDamage(characterId: string, skillId: string)
   if (learnedLevel <= 0) throw new Error('Skill not learned');
   if (character.mana < skill.manaCost) throw new Error('Not enough mana');
 
-  const { physic, elemental } = parseWeaponAffixes(character.inventoryItems);
-  const bundle = buildSkillBundle(character, skill, physic, elemental);
-  const acc = computeAccuracy(character);
-  return { bundle, accuracy: acc, manaCost: skill.manaCost, cooldownMs: skill.cooldownMs, skill };
+  const set = computeActiveSetBonusTotals(character.inventoryItems as any);
+  const { physic, elemental, elementalPct } = parseWeaponAffixes(character.inventoryItems);
+  const elemScaled = {
+    fire: Math.round(elemental.fire * (1 + (elementalPct.firePct + set.elemPct.fire) / 100)),
+    cold: Math.round(elemental.cold * (1 + (elementalPct.coldPct + set.elemPct.cold) / 100)),
+    lightning: Math.round(elemental.lightning * (1 + (elementalPct.lightningPct + set.elemPct.lightning) / 100)),
+    poison: Math.round(elemental.poison * (1 + (elementalPct.poisonPct + set.elemPct.poison) / 100)),
+  };
+  const bundle0 = buildSkillBundle(character, skill, physic, elemScaled);
+  const mul = skillAttackDamageMultiplier(skillId, learnedLevel);
+  const bundle = {
+    physic: Math.round(bundle0.physic * mul * (1 + set.corePhysDamagePct / 100)),
+    elemental: {
+      fire: Math.round(bundle0.elemental.fire * mul * (1 + set.elemPct.fire / 100)),
+      cold: Math.round(bundle0.elemental.cold * mul * (1 + set.elemPct.cold / 100)),
+      lightning: Math.round(bundle0.elemental.lightning * mul * (1 + set.elemPct.lightning / 100)),
+      poison: Math.round(bundle0.elemental.poison * mul * (1 + set.elemPct.poison / 100)),
+    },
+  };
+  const acc = Math.round(computeAccuracy(character) * (1 + set.accuracyPct / 100));
+  return {
+    bundle,
+    accuracy: acc,
+    manaCost: skill.manaCost,
+    cooldownMs: skill.cooldownMs,
+    skill,
+    critRatePctBonus: set.critRatePct,
+    critDamagePctBonus: set.critDamagePct,
+  };
+}
+
+/** Damage bundle only (no mana check). Used for slash sweep hits after mana was paid on slash start. */
+export async function getSkillDamageBundleForCast(characterId: string, skillId: string) {
+  const character = await prisma.character.findUnique({
+    where: { id: characterId },
+    include: { inventoryItems: true },
+  });
+  const skill = await prisma.skillDefinition.findUnique({ where: { id: skillId } });
+  if (!character || !skill) throw new Error('Invalid combat entities');
+  const learnedLevel = await getCharacterSkillLevel(characterId, skillId);
+  if (learnedLevel <= 0) throw new Error('Skill not learned');
+
+  const set = computeActiveSetBonusTotals(character.inventoryItems as any);
+  const { physic, elemental, elementalPct } = parseWeaponAffixes(character.inventoryItems);
+  const elemScaled = {
+    fire: Math.round(elemental.fire * (1 + (elementalPct.firePct + set.elemPct.fire) / 100)),
+    cold: Math.round(elemental.cold * (1 + (elementalPct.coldPct + set.elemPct.cold) / 100)),
+    lightning: Math.round(elemental.lightning * (1 + (elementalPct.lightningPct + set.elemPct.lightning) / 100)),
+    poison: Math.round(elemental.poison * (1 + (elementalPct.poisonPct + set.elemPct.poison) / 100)),
+  };
+  const bundle0 = buildSkillBundle(character, skill, physic, elemScaled);
+  const mul = skillAttackDamageMultiplier(skillId, learnedLevel);
+  const bundle = {
+    physic: Math.round(bundle0.physic * mul * (1 + set.corePhysDamagePct / 100)),
+    elemental: {
+      fire: Math.round(bundle0.elemental.fire * mul * (1 + set.elemPct.fire / 100)),
+      cold: Math.round(bundle0.elemental.cold * mul * (1 + set.elemPct.cold / 100)),
+      lightning: Math.round(bundle0.elemental.lightning * mul * (1 + set.elemPct.lightning / 100)),
+      poison: Math.round(bundle0.elemental.poison * mul * (1 + set.elemPct.poison / 100)),
+    },
+  };
+  const acc = Math.round(computeAccuracy(character) * (1 + set.accuracyPct / 100));
+  return { bundle, accuracy: acc, critRatePctBonus: set.critRatePct, critDamagePctBonus: set.critDamagePct };
 }
 
 /** Damage quái đánh nhân vật (chỉ physic từ quái). */

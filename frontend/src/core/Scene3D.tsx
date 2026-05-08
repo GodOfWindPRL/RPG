@@ -104,6 +104,7 @@ export function Scene3D() {
   const worldPopups = useGameStore((s) => s.worldPopups);
   const groundLoot = useGameStore((s) => s.groundLoot);
   const slashFx = useGameStore((s) => s.slashFx);
+  const playerFacingYaw = useGameStore((s) => s.playerFacingYaw);
   const cameraFov = useCameraSettingsStore((s) => s.fov);
   const distanceScale = useCameraSettingsStore((s) => s.distanceScale);
   const o = CAMERA_BASE_OFFSET;
@@ -112,7 +113,7 @@ export function Scene3D() {
   if (!character) return null;
 
   return (
-    <Canvas style={{ width: '100%', height: '100%' }} shadows camera={{ position: camPos, fov: cameraFov }}>
+    <Canvas style={{ width: '100%', height: '100%' }} shadows="percentage" camera={{ position: camPos, fov: cameraFov }}>
       <CameraFovSync />
       <ambientLight intensity={0.55} />
       <hemisphereLight args={['#cbd5e1', '#0f172a', 0.45]} />
@@ -123,7 +124,16 @@ export function Scene3D() {
         <lineBasicMaterial color="#38bdf8" />
       </lineSegments>
       <PlayerMesh x={character.posX} y={0} z={character.posZ} isDead={character.hp <= 0} />
-      {slashFx && <SlashArcFx key={slashFx.seq} seq={slashFx.seq} x={slashFx.x} z={slashFx.z} yaw={slashFx.yaw} />}
+      {slashFx && (
+        <SlashArcFx
+          key={slashFx.seq}
+          seq={slashFx.seq}
+          x={character.posX}
+          z={character.posZ}
+          yaw={playerFacingYaw}
+          durationSec={Math.max(0.2, Math.min(2.5, (slashFx.durationMs ?? 1000) / 1000))}
+        />
+      )}
       {groundLoot.map((l) => (
         <group key={l.id} position={[l.x, 0.05, l.z]}>
           <Html center distanceFactor={18} style={{ pointerEvents: 'auto' }} zIndexRange={[220, 0]}>
@@ -180,6 +190,8 @@ export function Scene3D() {
         .map((enemy) => (
           <EnemyMesh
             key={enemy.id}
+            name={enemy.name}
+            isBoss={enemy.isBoss === true}
             x={enemy.x}
             z={enemy.z}
             hp={enemy.hp}
@@ -189,6 +201,7 @@ export function Scene3D() {
             animSeq={enemy.animSeq ?? 0}
             diedAt={enemy.diedAt}
             selected={selectedEnemyId === enemy.id}
+            debuffs={enemy.debuffs}
             onSelect={() => setSelectedEnemyId(enemy.id)}
           />
         ))}

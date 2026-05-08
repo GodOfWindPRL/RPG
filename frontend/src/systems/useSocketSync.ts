@@ -17,6 +17,7 @@ export function useSocketSync() {
   const setFloatingText = useGameStore((s) => s.setFloatingText);
   const setInventory = useGameStore((s) => s.setInventory);
   const setManaHp = useGameStore((s) => s.setManaHp);
+  const setSlashAcceptedSwingId = useGameStore((s) => s.setSlashAcceptedSwingId);
   const patchCharacter = useGameStore((s) => s.patchCharacter);
   const addWorldPopup = useGameStore((s) => s.addWorldPopup);
   const setGroundLoot = useGameStore((s) => s.setGroundLoot);
@@ -32,6 +33,27 @@ export function useSocketSync() {
 
     socket.on('connect', () => {
       socket.emit('player:join', { characterId });
+    });
+    socket.on('skill:slashStarted', (payload: { mana?: number; swingId?: number }) => {
+      if (typeof payload.mana !== 'number') return;
+      if (typeof payload.swingId === 'number' && Number.isFinite(payload.swingId)) {
+        setSlashAcceptedSwingId(payload.swingId);
+      }
+      const ch = useGameStore.getState().character;
+      if (ch) setManaHp(ch.hp, payload.mana);
+    });
+    socket.on('skill:slashRejected', (payload: { message?: string; swingId?: number }) => {
+      const msg = typeof payload.message === 'string' && payload.message ? payload.message : 'Cannot use Slash';
+      const ch = useGameStore.getState().character;
+      if (!ch) return;
+      addWorldPopup({ x: ch.posX, z: ch.posZ, y: 2.25, text: msg, color: '#fca5a5', fontSize: 1.1, fontWeight: 'bold' });
+      setFloatingText(msg);
+      setTimeout(() => setFloatingText(null), 600);
+      // If this rejection corresponds to the current swing, ensure we don't accept hits.
+      if (typeof payload.swingId === 'number' && Number.isFinite(payload.swingId)) {
+        const cur = useGameStore.getState().slashAcceptedSwingId;
+        if (cur === payload.swingId) setSlashAcceptedSwingId(null);
+      }
     });
     socket.on('world:snapshot', (payload: { enemies: any[] }) => {
       // Server sometimes sends { you, enemies } on join, and { enemies } on later ticks.
@@ -138,25 +160,8 @@ export function useSocketSync() {
     });
     socket.on('loot:pickedUp', (payload: { item: any }) => {
       const item = payload.item;
-      setInventory([item, ...useGameStore.getState().inventory]);
-
-      const slotRaw = String(item?.definition?.slot ?? '').toLowerCase();
-      const next = { ...equipmentLayout };
-      const trySlot = (k: keyof typeof next) => {
-        if (next[k]) return false;
-        next[k] = item.id;
-        return true;
-      };
-      let equipped = false;
-      if (slotRaw.includes('weapon')) equipped = trySlot('weaponRight') || trySlot('weaponLeft');
-      else if (slotRaw.includes('ring')) equipped = trySlot('ring');
-      else if (slotRaw.includes('amulet')) equipped = trySlot('amulet');
-      else if (slotRaw.includes('helmet') || slotRaw.includes('head')) equipped = trySlot('head');
-      else if (slotRaw.includes('armor') || slotRaw.includes('chest')) equipped = trySlot('chest');
-      else if (slotRaw.includes('legs') || slotRaw.includes('pants')) equipped = trySlot('legs');
-      else if (slotRaw.includes('hands') || slotRaw.includes('glove')) equipped = trySlot('hands');
-      else if (slotRaw.includes('feet') || slotRaw.includes('boot')) equipped = trySlot('feet');
-      if (equipped) setEquipmentLayout(next);
+      // Defensive dedupe: avoid accidental duplicates from reconnects / repeated events.
+      setInventory([item, ...useGameStore.getState().inventory.filter((it) => it.id !== item.id)]);
     });
     socket.on('inventory:full', () => {
       const ch = useGameStore.getState().character;
@@ -191,6 +196,11 @@ export function useSocketSync() {
         patchCharacter(payload);
       },
     );
+    socket.on('player:regen', (payload: { hp: number; mana: number; maxHp: number; maxMana: number }) => {
+      const ch = useGameStore.getState().character;
+      if (!ch) return;
+      setManaHp(payload.hp, payload.mana, payload.maxHp, payload.maxMana);
+    });
 
     return () => {
       socket.disconnect();

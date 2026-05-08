@@ -22,6 +22,8 @@ const TURN_EPS = 0.0005;
 const MOVE_EPS = 0.0008;
 const TURN_LERP = 0.22;
 const MODEL_YAW_OFFSET = 0;
+const MIN_ATTACK_PERIOD_MS = 250;
+const MAX_ATTACK_PERIOD_MS = 2000;
 
 export function PlayerMesh({ x, y = 0, z, isDead = false }: PlayerMeshProps) {
   const rootRef = useRef<THREE.Group>(null);
@@ -40,6 +42,7 @@ export function PlayerMesh({ x, y = 0, z, isDead = false }: PlayerMeshProps) {
 
   const attackAnimSeq = useGameStore((s) => s.attackAnimSeq);
   const playerFacingYaw = useGameStore((s) => s.playerFacingYaw);
+  const attackSpeed = useGameStore((s) => s.character?.attackSpeed ?? 100);
 
   const walkFbx = useFBX(devilWalkUrl);
   const idleFbx = useFBX(idleAnimUrl);
@@ -143,16 +146,24 @@ export function PlayerMesh({ x, y = 0, z, isDead = false }: PlayerMeshProps) {
   useEffect(() => {
     if (!showModel || !actions.Attack || isDead) return;
     const now = performance.now();
-    attackUntilRef.current = now + 450;
     const atk = actions.Attack;
     atk.reset();
     atk.setLoop(THREE.LoopOnce, 1);
     atk.clampWhenFinished = true;
+    // Sync animation length to gameplay attack period:
+    // attackSpeed=100 => 1 hit/sec => 1s animation.
+    const periodMsRaw = Math.round((1000 * 100) / Math.max(1, attackSpeed));
+    const periodMs = Math.max(MIN_ATTACK_PERIOD_MS, Math.min(MAX_ATTACK_PERIOD_MS, periodMsRaw));
+    attackUntilRef.current = now + periodMs;
+    const clipDur = atk.getClip()?.duration ?? 0.45;
+    const desiredSec = periodMs / 1000;
+    const timeScale = desiredSec > 0.001 ? clipDur / desiredSec : 1;
+    atk.setEffectiveTimeScale(timeScale);
     atk.fadeIn(0.06).play();
     if (actions.Idle) actions.Idle.fadeOut(0.06);
     if (actions.Walk) actions.Walk.fadeOut(0.06);
     currentStateRef.current = 'attack';
-  }, [attackAnimSeq, actions, showModel, isDead]);
+  }, [attackAnimSeq, actions, showModel, isDead, attackSpeed]);
 
   useEffect(() => {
     const dx = x - prevPosRef.current.x;

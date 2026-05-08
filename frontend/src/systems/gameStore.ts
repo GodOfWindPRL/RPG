@@ -23,6 +23,8 @@ interface GameState {
   selectedEnemyId: string | null;
   inventory: InventoryItem[];
   equipmentLayout: EquipmentLayout;
+  /** Persisted inventory cell layout per character (flattened row-major ids, 10x6). */
+  inventoryGridByCharacterId: Record<string, (string | null)[]>;
   skills: CharacterSkill[];
   quests: CharacterQuest[];
   floatingText: string | null;
@@ -49,7 +51,11 @@ interface GameState {
   attackAnimSeq: number;
   playerFacingYaw: number;
   /** VFX Slash: snapshot vị trí / hướng lúc vung (không bám theo player). */
-  slashFx: { seq: number; x: number; z: number; yaw: number } | null;
+  slashFx: { seq: number; x: number; z: number; yaw: number; durationMs?: number } | null;
+  /** Server ack for slashStart; used to gate slashHit when spam clicking. */
+  slashAcceptedSwingId: number | null;
+  /** Debuffs currently affecting the player (for HUD icons). */
+  playerDebuffs: { burnUntil?: number; slowUntil?: number; poisonUntil?: number; shockUntil?: number } | null;
   setToken: (token: string | null) => void;
   setCharacter: (character: Character | null) => void;
   setEnemies: (enemies: Enemy[]) => void;
@@ -57,6 +63,7 @@ interface GameState {
   updateEnemy: (enemyId: string, hp: number, diedAt?: number) => void;
   setInventory: (inventory: InventoryItem[]) => void;
   setEquipmentLayout: (layout: EquipmentLayout) => void;
+  setInventoryGridLayout: (characterId: string, layout: (string | null)[]) => void;
   setSkills: (skills: CharacterSkill[]) => void;
   setQuests: (quests: CharacterQuest[]) => void;
   setFloatingText: (value: string | null) => void;
@@ -75,8 +82,10 @@ interface GameState {
   }) => void;
   removeWorldPopup: (id: string) => void;
   triggerAttackAnim: () => void;
-  triggerSlashFx: (x: number, z: number, yaw: number) => void;
+  triggerSlashFx: (x: number, z: number, yaw: number, durationMs?: number) => void;
   clearSlashFx: () => void;
+  setSlashAcceptedSwingId: (swingId: number | null) => void;
+  setPlayerDebuffs: (debuffs: GameState['playerDebuffs']) => void;
   setPlayerFacingYaw: (yaw: number) => void;
   moveBy: (dx: number, dz: number) => void;
   setManaHp: (hp: number, mana: number, maxHp?: number, maxMana?: number) => void;
@@ -90,6 +99,7 @@ export const useGameStore = create<GameState>((set) => ({
   selectedEnemyId: null,
   inventory: [],
   equipmentLayout: emptyEquipmentLayout(),
+  inventoryGridByCharacterId: {},
   skills: [],
   quests: [],
   floatingText: null,
@@ -98,6 +108,8 @@ export const useGameStore = create<GameState>((set) => ({
   attackAnimSeq: 0,
   playerFacingYaw: 0,
   slashFx: null,
+  slashAcceptedSwingId: null,
+  playerDebuffs: null,
   setToken: (token) => set({ token }),
   setCharacter: (character) => set({ character }),
   setEnemies: (enemies) =>
@@ -118,8 +130,26 @@ export const useGameStore = create<GameState>((set) => ({
       selectedEnemyId:
         state.selectedEnemyId === enemyId && hp <= 0 ? null : state.selectedEnemyId,
     })),
-  setInventory: (inventory) => set({ inventory }),
+  setInventory: (inventory) =>
+    set({
+      inventory: (() => {
+        // Always dedupe by item ID to prevent UI desync.
+        const byId = new Map<string, InventoryItem>();
+        for (const it of inventory ?? []) {
+          if (!it?.id) continue;
+          byId.set(it.id, it);
+        }
+        return Array.from(byId.values());
+      })(),
+    }),
   setEquipmentLayout: (equipmentLayout) => set({ equipmentLayout }),
+  setInventoryGridLayout: (characterId, layout) =>
+    set((state) => ({
+      inventoryGridByCharacterId: {
+        ...state.inventoryGridByCharacterId,
+        [characterId]: Array.isArray(layout) ? layout.slice(0, 60) : [],
+      },
+    })),
   setSkills: (skills) => set({ skills }),
   setQuests: (quests) => set({ quests }),
   setFloatingText: (floatingText) => set({ floatingText }),
@@ -140,11 +170,13 @@ export const useGameStore = create<GameState>((set) => ({
     }),
   removeWorldPopup: (id) => set((state) => ({ worldPopups: state.worldPopups.filter((p) => p.id !== id) })),
   triggerAttackAnim: () => set((state) => ({ attackAnimSeq: state.attackAnimSeq + 1 })),
-  triggerSlashFx: (x, z, yaw) =>
+  triggerSlashFx: (x, z, yaw, durationMs) =>
     set((state) => ({
-      slashFx: { seq: (state.slashFx?.seq ?? 0) + 1, x, z, yaw },
+      slashFx: { seq: (state.slashFx?.seq ?? 0) + 1, x, z, yaw, ...(typeof durationMs === 'number' ? { durationMs } : {}) },
     })),
   clearSlashFx: () => set({ slashFx: null }),
+  setSlashAcceptedSwingId: (slashAcceptedSwingId) => set({ slashAcceptedSwingId }),
+  setPlayerDebuffs: (playerDebuffs) => set({ playerDebuffs }),
   setPlayerFacingYaw: (playerFacingYaw) => set({ playerFacingYaw }),
   moveBy: (dx, dz) =>
     set((state) => {

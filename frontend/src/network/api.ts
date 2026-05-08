@@ -84,6 +84,22 @@ export function allocateStat(token: string, characterId: string, stat: 'str' | '
   });
 }
 
+export function equipItem(token: string, characterId: string, itemId: string) {
+  return request<{ inventoryItems: any[]; character?: Character | null }>('/api/rpg/game/items/equip', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}` },
+    body: JSON.stringify({ characterId, itemId }),
+  });
+}
+
+export function unequipItem(token: string, characterId: string, itemId: string) {
+  return request<{ inventoryItems: any[]; character?: Character | null }>('/api/rpg/game/items/unequip', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}` },
+    body: JSON.stringify({ characterId, itemId }),
+  });
+}
+
 
 export function resetCharacter(token: string, characterId: string) {
   return request<{ character: Character; skills: any[]; inventoryItems: any[] }>(
@@ -94,4 +110,12 @@ export function resetCharacter(token: string, characterId: string) {
     body: JSON.stringify({ characterId }),
     },
   );
+}
+
+export function upgradeSkill(token: string, characterId: string, skillId: string) {
+  return request<{ character: Character | null; skills: any[] }>('/api/rpg/game/skills/unlock', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}` },
+    body: JSON.stringify({ characterId, skillId }),
+  });
 }

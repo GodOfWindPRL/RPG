@@ -14,9 +14,14 @@ export async function unlockSkill(characterId: string, skillId: string) {
   }
   if (character.skillPoints <= 0) throw new Error('No skill points');
 
+  const cur = await prisma.characterSkill.findUnique({
+    where: { characterId_skillId: { characterId, skillId } },
+  });
+  const nextLevel = (cur?.level ?? 0) + 1;
+  if (nextLevel > 20) throw new Error('Skill is already max level');
   await prisma.characterSkill.upsert({
     where: { characterId_skillId: { characterId, skillId } },
-    update: { level: { increment: 1 } },
+    update: { level: nextLevel },
     create: { characterId, skillId, level: 1 },
   });
   await prisma.character.update({

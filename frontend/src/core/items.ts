@@ -21,6 +21,8 @@ export type UiItem = {
   icon: string;
   rarity?: string;
   level?: number;
+  /** Chỉ dùng để hiển thị / cộng Luck % từ server (drop); opt base + extra vẫn theo UI. */
+  affixJson?: string;
 };
 
 export type OptLine = {
@@ -30,80 +32,44 @@ export type OptLine = {
   tone: 'base' | 'extra';
 };
 
-function hashString(s: string): number {
-  let h = 2166136261;
-  for (let i = 0; i < s.length; i++) {
-    h ^= s.charCodeAt(i);
-    h = Math.imul(h, 16777619);
-  }
-  return h >>> 0;
-}
+/**
+ * Affix keys we render. The server `affixJson` is the single source of truth
+ * — the client never invents extras anymore.
+ */
+const AFFIX_KEYS_FLAT = new Set([
+  'physicDamage',
+  'magicDamage',
+  'accuracy',
+  'attackSpeed',
+  'moveSpeed',
+  'defense',
+  'evasion',
+  'maxHp',
+  'maxMana',
+  'hpRegen',
+  'manaRegen',
+  'fireDamage',
+  'coldDamage',
+  'lightningDamage',
+  'poisonDamage',
+]);
+const AFFIX_KEYS_PCT = new Set([
+  'fireDamagePct',
+  'coldDamagePct',
+  'lightningDamagePct',
+  'poisonDamagePct',
+  'hpRegenPct',
+  'manaRegenPct',
+  'fireResist',
+  'coldResist',
+  'lightningResist',
+  'poisonResist',
+  'critRate',
+  'critDamage',
+  'luckPercent',
+]);
 
-function mulberry32(seed: number) {
-  return () => {
-    let t = (seed += 0x6d2b79f5);
-    t = Math.imul(t ^ (t >>> 15), t | 1);
-    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
-}
-
-function rarityExtraCount(rarity?: string): number {
-  const r = (rarity ?? 'WHITE').toUpperCase();
-  // WHITE:0, BLUE:2, GREEN:3, YELLOW:4, MYTHIC:5 (cap 6 lines extra max)
-  if (r === 'WHITE') return 0;
-  if (r === 'BLUE') return 2;
-  if (r === 'GREEN') return 3;
-  if (r === 'YELLOW') return 4;
-  if (r === 'MYTHIC') return 5;
-  return 0;
-}
-
-function scaleBase(level: number, v1: number): number {
-  // level 1 => v1, level 2 => v1*1.5, ... (round)
-  const lv = Math.max(1, Math.floor(level || 1));
-  return Math.round(v1 * 1.5 ** (lv - 1));
-}
-
-export function baseOptLines(kind: ItemKind, level: number): OptLine[] {
-  const lv = Math.max(1, Math.floor(level || 1));
-  if (kind === 'weapon') {
-    const dmg = scaleBase(lv, 20);
-    return [{ key: 'physicDamage', label: 'Physic damage', valueText: `+${dmg}`, tone: 'base' }];
-  }
-  if (kind === 'chest' || kind === 'head' || kind === 'legs' || kind === 'hands') {
-    const def = scaleBase(lv, 10);
-    return [{ key: 'defense', label: 'Defense', valueText: `+${def}`, tone: 'base' }];
-  }
-  if (kind === 'feet') {
-    const def = scaleBase(lv, 10);
-    return [
-      { key: 'defense', label: 'Defense', valueText: `+${def}`, tone: 'base' },
-      { key: 'moveSpeed', label: 'Move Speed', valueText: `+1`, tone: 'base' },
-    ];
-  }
-  // ring/amulet: no base lines; potion/misc: none for now
-  return [];
-}
-
-type ExtraKey =
-  | 'accuracy'
-  | 'attackSpeed'
-  | 'moveSpeed'
-  | 'defense'
-  | 'evasion'
-  | 'maxHp'
-  | 'maxMana'
-  | 'physicDamage'
-  | 'magicDamage'
-  | 'critRate'
-  | 'critDamage'
-  | 'fireResist'
-  | 'coldResist'
-  | 'lightningResist'
-  | 'poisonResist';
-
-const EXTRA_LABEL: Record<ExtraKey, string> = {
+const AFFIX_LABEL: Record<string, string> = {
   accuracy: 'Accuracy',
   attackSpeed: 'Attack Speed',
   moveSpeed: 'Move Speed',
@@ -115,102 +81,108 @@ const EXTRA_LABEL: Record<ExtraKey, string> = {
   magicDamage: 'Magic damage',
   critRate: 'Crit Rate',
   critDamage: 'Crit damage',
+  fireDamagePct: 'Fire Damage',
+  coldDamagePct: 'Cold Damage',
+  lightningDamagePct: 'Lightning Damage',
+  poisonDamagePct: 'Poison Damage',
+  fireDamage: 'Fire Damage',
+  coldDamage: 'Cold Damage',
+  lightningDamage: 'Lightning Damage',
+  poisonDamage: 'Poison Damage',
+  hpRegen: 'HP Regeneration',
+  hpRegenPct: 'HP Regeneration',
+  manaRegen: 'MP Regeneration',
+  manaRegenPct: 'MP Regeneration',
   fireResist: 'Fire resist',
   coldResist: 'Cold resist',
   lightningResist: 'Lightning resist',
   poisonResist: 'Poison resist',
+  luckPercent: 'Luck',
 };
 
-function extraPool(kind: ItemKind): ExtraKey[] {
-  if (kind === 'weapon') {
-    return ['physicDamage', 'accuracy', 'attackSpeed', 'critRate', 'critDamage', 'magicDamage'];
-  }
-  if (kind === 'ring' || kind === 'amulet') {
-    return [
-      'accuracy',
-      'attackSpeed',
-      'moveSpeed',
-      'maxHp',
-      'maxMana',
-      'critRate',
-      'critDamage',
-      'fireResist',
-      'coldResist',
-      'lightningResist',
-      'poisonResist',
-    ];
-  }
-  if (kind === 'feet') {
-    return ['moveSpeed', 'evasion', 'defense', 'maxHp', 'critRate', 'fireResist', 'coldResist', 'lightningResist', 'poisonResist'];
-  }
-  // armor-ish default
-  return ['defense', 'evasion', 'maxHp', 'accuracy', 'attackSpeed', 'fireResist', 'coldResist', 'lightningResist', 'poisonResist'];
+/** Stable order so tooltips look consistent. */
+const AFFIX_ORDER = [
+  'physicDamage',
+  'magicDamage',
+  'defense',
+  'evasion',
+  'accuracy',
+  'attackSpeed',
+  'moveSpeed',
+  'maxHp',
+  'maxMana',
+  'critRate',
+  'critDamage',
+  'fireDamage',
+  'coldDamage',
+  'lightningDamage',
+  'poisonDamage',
+  'fireDamagePct',
+  'coldDamagePct',
+  'lightningDamagePct',
+  'poisonDamagePct',
+  'hpRegen',
+  'hpRegenPct',
+  'manaRegen',
+  'manaRegenPct',
+  'fireResist',
+  'coldResist',
+  'lightningResist',
+  'poisonResist',
+  'luckPercent',
+];
+
+/** Which keys are considered "base" (white-line) for a given slot. */
+function baseKeysForKind(kind: ItemKind): Set<string> {
+  if (kind === 'weapon') return new Set(['physicDamage']);
+  if (kind === 'feet') return new Set(['defense', 'moveSpeed']);
+  if (kind === 'chest' || kind === 'head' || kind === 'legs' || kind === 'hands') return new Set(['defense']);
+  return new Set();
 }
 
-function rollExtraValue(key: ExtraKey, level: number, rand: () => number): string {
-  const lv = Math.max(1, Math.floor(level || 1));
-  const r = rand();
-  switch (key) {
-    case 'accuracy':
-      return `+${Math.round((2 + lv * 1.2) * (0.8 + r * 0.4))}`;
-    case 'attackSpeed':
-      return `+${Math.round((1 + lv * 0.6) * (0.8 + r * 0.4))}`;
-    case 'moveSpeed':
-      return `+${Math.max(1, Math.round((1 + lv * 0.2) * (0.7 + r * 0.6)))}`;
-    case 'defense':
-      return `+${Math.round((4 + lv * 1.4) * (0.8 + r * 0.4))}`;
-    case 'evasion':
-      return `+${Math.round((3 + lv * 1.2) * (0.8 + r * 0.4))}`;
-    case 'maxHp':
-      return `+${Math.round((12 + lv * 6) * (0.8 + r * 0.4))}`;
-    case 'maxMana':
-      return `+${Math.round((8 + lv * 5) * (0.8 + r * 0.4))}`;
-    case 'physicDamage':
-      return `+${Math.round((3 + lv * 1.6) * (0.8 + r * 0.4))}`;
-    case 'magicDamage':
-      return `+${Math.round((2 + lv * 1.4) * (0.8 + r * 0.4))}`;
-    case 'critRate':
-      return `+${Math.round((1 + lv * 0.35) * (0.8 + r * 0.4))}%`;
-    case 'critDamage':
-      return `+${Math.round((4 + lv * 1.2) * (0.8 + r * 0.4))}%`;
-    case 'fireResist':
-    case 'coldResist':
-    case 'lightningResist':
-    case 'poisonResist':
-      return `+${Math.round((2 + lv * 0.5) * (0.8 + r * 0.4))}%`;
-    default:
-      return '+0';
+function formatAffixValue(key: string, raw: number): string {
+  if (AFFIX_KEYS_PCT.has(key)) {
+    const v = Math.round(raw * 10) / 10;
+    return `+${v}%`;
   }
+  if (AFFIX_KEYS_FLAT.has(key)) {
+    return `+${Math.round(raw)}`;
+  }
+  // Unknown key — just show as flat.
+  return `+${Math.round(raw * 10) / 10}`;
 }
 
-export function extraOptLines(item: UiItem): OptLine[] {
-  const count = Math.min(6, rarityExtraCount(item.rarity));
-  if (count <= 0) return [];
-  const rand = mulberry32(hashString(item.id));
-  const pool = extraPool(item.kind);
-  const picked = new Set<ExtraKey>();
+/**
+ * Build option lines straight from the item's `affixJson`. This is the only
+ * source of truth — no client-side roll, no fake extras.
+ */
+export function allOptLines(item: UiItem): OptLine[] {
+  if (!item.affixJson) return [];
+  let o: Record<string, unknown>;
+  try {
+    o = JSON.parse(item.affixJson) as Record<string, unknown>;
+  } catch {
+    return [];
+  }
+  const baseKeys = baseKeysForKind(item.kind);
   const out: OptLine[] = [];
-  for (let i = 0; i < count; i++) {
-    let k: ExtraKey = pool[Math.floor(rand() * pool.length)]!;
-    // avoid duplicates
-    let guard = 0;
-    while (picked.has(k) && guard++ < 12) k = pool[Math.floor(rand() * pool.length)]!;
-    picked.add(k);
+  for (const key of AFFIX_ORDER) {
+    const raw = o[key];
+    if (typeof raw !== 'number' || !Number.isFinite(raw) || raw === 0) continue;
+    const label = AFFIX_LABEL[key] ?? key;
     out.push({
-      key: k,
-      label: EXTRA_LABEL[k],
-      valueText: rollExtraValue(k, item.level ?? 1, rand),
-      tone: 'extra',
+      key,
+      label,
+      valueText: formatAffixValue(key, raw),
+      tone: baseKeys.has(key) ? 'base' : 'extra',
     });
   }
   return out;
 }
 
-export function allOptLines(item: UiItem): OptLine[] {
-  const base = baseOptLines(item.kind, item.level ?? 1);
-  const extra = extraOptLines(item);
-  // Cap total displayed lines to 6 extras + base. User requirement: cap extras to 6; base always shown.
-  return [...base, ...extra];
+/** Backwards-compat: callers used to render base lines separately. */
+export function baseOptLines(_kind: ItemKind, _level: number): OptLine[] {
+  return [];
 }
 
 export type StatBonuses = Partial<{
@@ -225,73 +197,56 @@ export type StatBonuses = Partial<{
   coreMagicDamage: number;
   critRatePct: number;
   critDamagePct: number;
+  hpRegen: number;
+  hpRegenPct: number;
+  manaRegen: number;
+  manaRegenPct: number;
   fireResistPct: number;
   coldResistPct: number;
   lightningResistPct: number;
   poisonResistPct: number;
+  /** Tổng Luck % từ trang bị (tối đa hiệu dụng 100 khi tính drop). */
+  luckPct: number;
 }>;
 
-function parseSignedNumber(text: string): number {
-  const m = text.match(/[-+]?\d+/);
-  return m ? Number(m[0]) : 0;
-}
+const AFFIX_TO_BONUS_KEY: Record<string, keyof StatBonuses> = {
+  accuracy: 'accuracy',
+  attackSpeed: 'attackSpeed',
+  moveSpeed: 'moveSpeed',
+  defense: 'defense',
+  evasion: 'evasion',
+  maxHp: 'maxHp',
+  maxMana: 'maxMana',
+  physicDamage: 'corePhysDamage',
+  magicDamage: 'coreMagicDamage',
+  critRate: 'critRatePct',
+  critDamage: 'critDamagePct',
+  hpRegen: 'hpRegen',
+  hpRegenPct: 'hpRegenPct',
+  manaRegen: 'manaRegen',
+  manaRegenPct: 'manaRegenPct',
+  fireResist: 'fireResistPct',
+  coldResist: 'coldResistPct',
+  lightningResist: 'lightningResistPct',
+  poisonResist: 'poisonResistPct',
+  luckPercent: 'luckPct',
+};
 
 export function bonusesFromItem(item: UiItem): StatBonuses {
-  const lines = allOptLines(item);
-  const b: StatBonuses = {};
-  for (const ln of lines) {
-    const n = parseSignedNumber(ln.valueText);
-    switch (ln.key) {
-      case 'accuracy':
-        b.accuracy = (b.accuracy ?? 0) + n;
-        break;
-      case 'attackSpeed':
-        b.attackSpeed = (b.attackSpeed ?? 0) + n;
-        break;
-      case 'moveSpeed':
-        b.moveSpeed = (b.moveSpeed ?? 0) + n;
-        break;
-      case 'defense':
-        b.defense = (b.defense ?? 0) + n;
-        break;
-      case 'evasion':
-        b.evasion = (b.evasion ?? 0) + n;
-        break;
-      case 'maxHp':
-        b.maxHp = (b.maxHp ?? 0) + n;
-        break;
-      case 'maxMana':
-        b.maxMana = (b.maxMana ?? 0) + n;
-        break;
-      case 'physicDamage':
-        b.corePhysDamage = (b.corePhysDamage ?? 0) + n;
-        break;
-      case 'magicDamage':
-        b.coreMagicDamage = (b.coreMagicDamage ?? 0) + n;
-        break;
-      case 'critRate':
-        b.critRatePct = (b.critRatePct ?? 0) + n;
-        break;
-      case 'critDamage':
-        b.critDamagePct = (b.critDamagePct ?? 0) + n;
-        break;
-      case 'fireResist':
-        b.fireResistPct = (b.fireResistPct ?? 0) + n;
-        break;
-      case 'coldResist':
-        b.coldResistPct = (b.coldResistPct ?? 0) + n;
-        break;
-      case 'lightningResist':
-        b.lightningResistPct = (b.lightningResistPct ?? 0) + n;
-        break;
-      case 'poisonResist':
-        b.poisonResistPct = (b.poisonResistPct ?? 0) + n;
-        break;
-      default:
-        break;
-    }
+  const out: StatBonuses = {};
+  if (!item.affixJson) return out;
+  let o: Record<string, unknown>;
+  try {
+    o = JSON.parse(item.affixJson) as Record<string, unknown>;
+  } catch {
+    return out;
   }
-  return b;
+  for (const [key, target] of Object.entries(AFFIX_TO_BONUS_KEY)) {
+    const v = o[key];
+    if (typeof v !== 'number' || !Number.isFinite(v)) continue;
+    out[target] = ((out[target] as number | undefined) ?? 0) + v;
+  }
+  return out;
 }
 
 export function sumBonuses(items: UiItem[]): StatBonuses {
@@ -354,6 +309,7 @@ export function mapBackendItemToUi(it: InventoryItem): UiItem {
     icon: emojiForKind(kind),
     rarity: it.rarity,
     level: it.level,
+    affixJson: it.affixJson,
   };
 }
 

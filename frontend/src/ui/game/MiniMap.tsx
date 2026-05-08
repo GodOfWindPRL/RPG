@@ -60,7 +60,9 @@ export function MiniMap() {
       <div className="mini-map-zoom-row">
         <button
           type="button"
+          tabIndex={-1}
           className="mini-map-zoom-btn"
+          onPointerDown={(e) => e.preventDefault()}
           onClick={() => setZoomIdx((z) => Math.max(0, z - 1))}
           title="Zoom in"
         >
@@ -68,7 +70,9 @@ export function MiniMap() {
         </button>
         <button
           type="button"
+          tabIndex={-1}
           className="mini-map-zoom-btn"
+          onPointerDown={(e) => e.preventDefault()}
           onClick={() => setZoomIdx((z) => Math.min(ZOOM_LEVELS.length - 1, z + 1))}
           title="Zoom out"
         >

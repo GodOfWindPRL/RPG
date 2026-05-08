@@ -208,6 +208,8 @@ input, button {
 }
 
 .rpg-slot {
+  transition: none;
+  -webkit-tap-highlight-color: transparent;
   background:
     radial-gradient(120% 120% at 20% 15%, rgba(255, 255, 255, 0.08), rgba(255, 255, 255, 0) 55%),
     linear-gradient(180deg, rgba(15, 23, 42, 0.85), rgba(2, 6, 23, 0.95));
@@ -216,6 +218,31 @@ input, button {
     inset 0 -1px 0 rgba(0, 0, 0, 0.55),
     inset 0 0 0 1px rgba(2, 6, 23, 0.7),
     0 6px 16px rgba(0, 0, 0, 0.35);
+}
+
+/* No browser focus ring / press flash on inventory cells */
+.rpg-slot:focus,
+.rpg-slot:focus-visible,
+.rpg-slot:focus-within {
+  outline: none;
+}
+
+.rpg-slot:active {
+  outline: none;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.08),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.55),
+    inset 0 0 0 1px rgba(2, 6, 23, 0.7),
+    0 6px 16px rgba(0, 0, 0, 0.35);
+}
+
+.rpg-slot button:focus,
+.rpg-slot button:focus-visible {
+  outline: none;
+}
+
+.rpg-slot button:active {
+  outline: none;
 }
 
 .rpg-slot::before {
@@ -249,16 +276,10 @@ input, button {
     inset 0 0 0 1px rgba(15, 23, 42, 0.85);
 }
 
+/* Selection state is kept in JS only — no extra outline / glow */
 .rpg-slot-selected {
-  outline: 2px solid rgba(251, 191, 36, 0.55);
-  outline-offset: 2px;
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.12),
-    inset 0 -1px 0 rgba(0, 0, 0, 0.65),
-    inset 0 0 0 1px rgba(2, 6, 23, 0.72),
-    0 0 0 1px rgba(251, 191, 36, 0.35),
-    0 10px 26px rgba(0, 0, 0, 0.5),
-    0 0 24px rgba(251, 191, 36, 0.18);
+  outline: none;
+  outline-offset: 0;
 }
 
 .wide-bar-text {

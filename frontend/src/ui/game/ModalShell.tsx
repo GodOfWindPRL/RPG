@@ -17,12 +17,26 @@ export function ModalShell({
         {title ? (
           <header className="modal-header">
             <h2 className="modal-title">{title}</h2>
-            <button type="button" className="modal-close" onClick={onClose} aria-label="Close">
+            <button
+              type="button"
+              tabIndex={-1}
+              className="modal-close"
+              onPointerDown={(e) => e.preventDefault()}
+              onClick={onClose}
+              aria-label="Close"
+            >
               ×
             </button>
           </header>
         ) : (
-          <button type="button" className="modal-close modal-close-floating" onClick={onClose} aria-label="Close">
+          <button
+            type="button"
+            tabIndex={-1}
+            className="modal-close modal-close-floating"
+            onPointerDown={(e) => e.preventDefault()}
+            onClick={onClose}
+            aria-label="Close"
+          >
             ×
           </button>
         )}

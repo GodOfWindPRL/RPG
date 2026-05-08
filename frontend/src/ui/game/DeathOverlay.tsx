@@ -35,7 +35,9 @@ export function DeathOverlay({ visible, onRevive }: DeathOverlayProps) {
         </h1>
         <button
           type="button"
+          tabIndex={-1}
           className="death-revive-btn rounded-xl bg-linear-to-b from-red-800 to-red-950 px-10 py-3.5 text-lg font-semibold text-red-50 shadow-lg ring-1 ring-red-500/40 transition hover:from-red-700 hover:to-red-900 hover:ring-red-400/60 active:scale-[0.98] disabled:pointer-events-none disabled:opacity-45"
+          onPointerDown={(e) => e.preventDefault()}
           onClick={onRevive}
         >
           Revive

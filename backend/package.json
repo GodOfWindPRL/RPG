@@ -7,7 +7,8 @@
     "start": "tsx src/index.ts",
     "build": "tsc",
     "prisma:generate": "prisma generate",
-    "prisma:migrate": "prisma migrate dev"
+    "prisma:migrate": "prisma migrate dev",
+    "migrate:reroll-affixes": "tsx src/scripts/rerollAffixes.ts"
   },
   "dependencies": {
     "@prisma/client": "^6.19.3",

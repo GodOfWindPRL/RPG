@@ -1,7 +1,8 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useGameStore } from '../systems/gameStore';
 import type { EquipmentSlot, OptLine, UiItem } from '../core/items';
 import { allOptLines, mapBackendItemToUi, slotAccepts } from '../core/items';
+import { equipItem, unequipItem } from '../network/api';
 
 type EquipmentState = {
   head: UiItem | null;
@@ -65,6 +66,41 @@ function placeItemsRowMajor(items: UiItem[]): (UiItem | null)[][] {
   return grid;
 }
 
+/** Giữ chỗ ô khi đồng bộ từ server; đồ mới chưa có chỗ → ô trống đầu tiên. */
+function mergeGridPreservingLayout(prev: (UiItem | null)[][], unequipped: UiItem[]): (UiItem | null)[][] {
+  const byId = new Map(unequipped.map((it) => [it.id, it]));
+  const next = prev.map((row) => row.slice());
+  for (let r = 0; r < INV_ROWS; r++) {
+    for (let c = 0; c < INV_COLS; c++) {
+      const cell = next[r][c];
+      if (!cell) continue;
+      const updated = byId.get(cell.id);
+      if (!updated) next[r][c] = null;
+      else next[r][c] = updated;
+    }
+  }
+  const placed = new Set<string>();
+  for (let r = 0; r < INV_ROWS; r++) {
+    for (let c = 0; c < INV_COLS; c++) {
+      if (next[r][c]) placed.add(next[r][c]!.id);
+    }
+  }
+  for (const it of unequipped) {
+    if (placed.has(it.id)) continue;
+    let done = false;
+    for (let r = 0; r < INV_ROWS && !done; r++) {
+      for (let c = 0; c < INV_COLS && !done; c++) {
+        if (!next[r][c]) {
+          next[r][c] = it;
+          placed.add(it.id);
+          done = true;
+        }
+      }
+    }
+  }
+  return next;
+}
+
 function tryParseDrag(ev: React.DragEvent): DragPayload | null {
   try {
     const raw = ev.dataTransfer.getData('application/x-rpg-item');
@@ -87,6 +123,55 @@ function rarityBorder(rarity?: string): string {
       return 'border-fuchsia-500/70';
     default:
       return 'border-slate-600/70';
+  }
+}
+
+function rarityText(rarity?: string): string {
+  switch ((rarity ?? '').toUpperCase()) {
+    case 'GREEN':
+      return 'text-emerald-300';
+    case 'BLUE':
+      return 'text-sky-300';
+    case 'YELLOW':
+      return 'text-amber-300';
+    case 'MYTHIC':
+      return 'text-fuchsia-300';
+    default:
+      return 'text-slate-100';
+  }
+}
+
+function rarityExtraText(rarity?: string): string {
+  // Opt extra follow rank color; base lines stay white-ish.
+  switch ((rarity ?? '').toUpperCase()) {
+    case 'GREEN':
+      return 'text-emerald-300';
+    case 'BLUE':
+      return 'text-sky-300';
+    case 'YELLOW':
+      return 'text-amber-300';
+    case 'MYTHIC':
+      return 'text-fuchsia-300';
+    default:
+      return 'text-slate-100';
+  }
+}
+
+function parseSetMeta(affixJson?: string): null | { key: string; name: string; piecesTotal: number; bonuses: string[] } {
+  if (!affixJson) return null;
+  try {
+    const o = JSON.parse(affixJson) as Record<string, unknown>;
+    const key = o.setKey;
+    const name = o.setName;
+    const piecesTotal = o.setPiecesTotal;
+    const bonuses = o.setBonuses;
+    if (typeof key !== 'string' || typeof name !== 'string') return null;
+    const total = typeof piecesTotal === 'number' && Number.isFinite(piecesTotal) ? Math.max(1, Math.round(piecesTotal)) : 0;
+    const list = Array.isArray(bonuses) ? bonuses.filter((x) => typeof x === 'string') : [];
+    if (!total || list.length === 0) return null;
+    return { key, name, piecesTotal: total, bonuses: list };
+  } catch {
+    return null;
   }
 }
 
@@ -114,9 +199,23 @@ function Slot({
   onActionDelete?: () => void;
 }) {
   const opts: OptLine[] = item ? allOptLines(item) : [];
+  const backendItems = useGameStore((s) => s.inventory);
+  const setMeta = parseSetMeta(item?.affixJson);
+  const equippedSetCount = useMemo(() => {
+    if (!setMeta) return 0;
+    let n = 0;
+    for (const it of backendItems) {
+      if (!it?.equipped) continue;
+      const meta = parseSetMeta(it.affixJson);
+      if (meta?.key === setMeta.key) n += 1;
+    }
+    return n;
+  }, [backendItems, setMeta?.key]);
+  const activeSetLines = setMeta ? Math.max(0, Math.min(setMeta.bonuses.length, equippedSetCount - 1)) : 0;
   return (
     <div
-      className={`group rpg-slot relative h-12 w-12 select-none rounded-md border transition ${
+      tabIndex={-1}
+      className={`group rpg-slot relative h-12 w-12 select-none rounded-md border ${
         item ? rarityBorder(item.rarity) : 'border-slate-700/70'
       } ${selected ? 'rpg-slot-selected' : ''}`}
       onClick={onClick}
@@ -136,19 +235,38 @@ function Slot({
       )}
       {item && (
         <div className="absolute left-1/2 top-full z-50 hidden w-max -translate-x-1/2 rounded-md border border-slate-700 bg-slate-950/95 px-2 py-1 text-xs text-slate-100 shadow-lg group-hover:block">
-          <div className="font-semibold">{item.name}</div>
+          <div className={`font-semibold ${rarityText(item.rarity)}`}>{item.name}</div>
           <div className="text-[11px] text-slate-300">
             {item.kind}
             {typeof item.level === 'number' ? ` · lv${item.level}` : ''}
-            {item.rarity ? ` · ${item.rarity}` : ''}
           </div>
           {opts.length > 0 && (
             <div className="mt-1 flex flex-col gap-0.5 text-[11px]">
-              {opts.map((ln) => (
-                <div key={ln.key} className={ln.tone === 'base' ? 'text-slate-100' : 'text-emerald-300'}>
+              {opts.map((ln, i) => (
+                <div
+                  key={`${ln.key}_${i}`}
+                  className={ln.tone === 'base' ? 'text-slate-100' : rarityExtraText(item.rarity)}
+                >
                   {ln.label}: <span className="font-semibold">{ln.valueText}</span>
                 </div>
               ))}
+            </div>
+          )}
+          {setMeta && (
+            <div className="mt-2 border-t border-slate-800/70 pt-2 text-[11px]">
+              <div className="font-semibold text-fuchsia-300">
+                Set: {setMeta.name} <span className="text-slate-400">({equippedSetCount}/{setMeta.piecesTotal})</span>
+              </div>
+              <div className="mt-1 flex flex-col gap-0.5">
+                {setMeta.bonuses.map((txt, i) => (
+                  <div
+                    key={`${setMeta.key}_${i}`}
+                    className={i < activeSetLines ? 'text-fuchsia-200' : 'text-fuchsia-200/45'}
+                  >
+                    {i + 2} pieces: <span className="font-semibold">{txt}</span>
+                  </div>
+                ))}
+              </div>
             </div>
           )}
           {(onActionEquip || onActionDelete) && (
@@ -156,7 +274,9 @@ function Slot({
               {onActionEquip && (
                 <button
                   type="button"
+                  tabIndex={-1}
                   className="cursor-pointer font-bold text-sky-200 hover:text-sky-100"
+                  onPointerDown={(e) => e.preventDefault()}
                   onClick={(e) => {
                     e.stopPropagation();
                     onActionEquip();
@@ -168,7 +288,9 @@ function Slot({
               {onActionDelete && (
                 <button
                   type="button"
+                  tabIndex={-1}
                   className="cursor-pointer font-bold text-rose-200 hover:text-rose-100"
+                  onPointerDown={(e) => e.preventDefault()}
                   onClick={(e) => {
                     e.stopPropagation();
                     onActionDelete();
@@ -187,93 +309,112 @@ function Slot({
 
 export function InventoryPanel() {
   const characterId = useGameStore((s) => s.character?.id);
+  const token = useGameStore((s) => s.token);
   const setEquipmentLayout = useGameStore((s) => s.setEquipmentLayout);
   const setInventory = useGameStore((s) => s.setInventory);
+  const patchCharacter = useGameStore((s) => s.patchCharacter);
   const backendItems = useGameStore((s) => s.inventory);
-  const uiItems = useMemo(() => backendItems.map(mapBackendItemToUi), [backendItems]);
+  const inventoryGridByCharacterId = useGameStore((s) => s.inventoryGridByCharacterId);
+  const setInventoryGridLayout = useGameStore((s) => s.setInventoryGridLayout);
 
-  const seedItems = useMemo(() => (uiItems.length > 0 ? uiItems : makeMockItems()), [uiItems]);
-  const [grid, setGrid] = useState<(UiItem | null)[][]>(() => placeItemsRowMajor(seedItems));
+  const [grid, setGrid] = useState<(UiItem | null)[][]>(() => {
+    if (!characterId) return placeItemsRowMajor([]);
+    const layout = inventoryGridByCharacterId[characterId];
+    if (!Array.isArray(layout) || layout.length === 0) return placeItemsRowMajor([]);
+    const byId = new Map(backendItems.map(mapBackendItemToUi).map((it) => [it.id, it]));
+    const next = buildEmptyGrid();
+    for (let i = 0; i < Math.min(layout.length, INV_ROWS * INV_COLS); i++) {
+      const id = layout[i];
+      const r = Math.floor(i / INV_COLS);
+      const c = i % INV_COLS;
+      next[r]![c] = id ? byId.get(id) ?? null : null;
+    }
+    return next;
+  });
   const [equip, setEquip] = useState<EquipmentState>(() => ({ ...EMPTY_EQUIP }));
   const [selected, setSelected] = useState<{ kind: 'inv'; r: number; c: number } | { kind: 'eq'; slot: EquipmentSlot } | null>(null);
+  const lastCharacterIdRef = useRef<string | undefined>(undefined);
 
+  // Persist grid layout (ids) so reopening modal does not auto-pack.
   useEffect(() => {
     if (!characterId) return;
-    const key = `rpg_inv_layout_${characterId}`;
-    try {
-      const raw = localStorage.getItem(key);
-      if (!raw) return;
-      const parsed = JSON.parse(raw) as {
-        equip?: Partial<Record<EquipmentSlot, string | null>>;
-        grid?: (string | null)[][];
-      };
-      const byId = new Map(seedItems.map((it) => [it.id, it]));
-      if (parsed.equip) {
-        const nextEq = { ...EMPTY_EQUIP } as EquipmentState;
-        (Object.keys(EMPTY_EQUIP) as EquipmentSlot[]).forEach((slot) => {
-          const id = parsed.equip?.[slot] ?? null;
-          nextEq[slot] = id ? byId.get(id) ?? null : null;
-        });
-        setEquip(nextEq);
-      }
-      if (parsed.grid) {
-        const nextGrid = buildEmptyGrid();
-        for (let r = 0; r < Math.min(INV_ROWS, parsed.grid.length); r++) {
-          for (let c = 0; c < Math.min(INV_COLS, parsed.grid[r]!.length); c++) {
-            const id = parsed.grid[r]![c];
-            nextGrid[r]![c] = id ? byId.get(id) ?? null : null;
-          }
-        }
-        setGrid(nextGrid);
-      }
-    } catch {
-      /* ignore */
+    const ids: (string | null)[] = [];
+    for (let r = 0; r < INV_ROWS; r++) {
+      for (let c = 0; c < INV_COLS; c++) ids.push(grid[r]?.[c]?.id ?? null);
     }
-  }, [characterId]);
+    setInventoryGridLayout(characterId, ids);
+  }, [grid, characterId, setInventoryGridLayout]);
 
+  // Source of truth = backend inventory items.
+  // Any item with equipped=true is shown in equipment; unequipped items are shown in the inventory grid.
+  // Layout trong hòm giữ nguyên khi sync; đổi nhân vật hoặc bấm "Xếp đồ" mới xếp lại hàng loạt.
   useEffect(() => {
-    if (!characterId) return;
-    const key = `rpg_inv_layout_${characterId}`;
-    const equipIds = Object.fromEntries(
-      (Object.keys(EMPTY_EQUIP) as EquipmentSlot[]).map((k) => [k, equip[k]?.id ?? null]),
-    ) as Record<EquipmentSlot, string | null>;
-    try {
-      localStorage.setItem(
-        key,
-        JSON.stringify({
-          equip: equipIds,
-          grid: grid.map((row) => row.map((cell) => cell?.id ?? null)),
-        }),
+    if (backendItems.length === 0) {
+      setEquip({ ...EMPTY_EQUIP });
+      setGrid(placeItemsRowMajor([]));
+      lastCharacterIdRef.current = characterId;
+      setEquipmentLayout(
+        (Object.keys(EMPTY_EQUIP) as EquipmentSlot[]).reduce((acc, k) => {
+          acc[k] = null;
+          return acc;
+        }, {} as Record<EquipmentSlot, string | null>),
       );
-    } catch {
-      /* ignore */
+      return;
     }
-    setEquipmentLayout(equipIds);
-  }, [characterId, equip, grid, setEquipmentLayout]);
+    const equipped = backendItems.filter((it: any) => it?.equipped);
+    const unequipped = backendItems.filter((it: any) => !it?.equipped);
+    const eqUi = equipped.map(mapBackendItemToUi);
+    const invUi = unequipped.map(mapBackendItemToUi);
 
-  // If backend inventory changes (loot), re-seed into empty slots (non-destructive).
-  useEffect(() => {
-    if (uiItems.length === 0) return;
+    const nextEq = { ...EMPTY_EQUIP } as EquipmentState;
+    for (const it of eqUi) {
+      if (it.kind === 'weapon') {
+        if (!nextEq.weaponRight) nextEq.weaponRight = it;
+        else if (!nextEq.weaponLeft) nextEq.weaponLeft = it;
+      } else if (it.kind === 'ring') {
+        nextEq.ring = it;
+      } else if (it.kind === 'amulet') {
+        nextEq.amulet = it;
+      } else if (it.kind === 'head') nextEq.head = it;
+      else if (it.kind === 'chest') nextEq.chest = it;
+      else if (it.kind === 'legs') nextEq.legs = it;
+      else if (it.kind === 'hands') nextEq.hands = it;
+      else if (it.kind === 'feet') nextEq.feet = it;
+    }
+    setEquip(nextEq);
+    const charSwitched = characterId !== lastCharacterIdRef.current;
+    lastCharacterIdRef.current = characterId;
     setGrid((prev) => {
-      const next = prev.map((row) => row.slice());
-      const present = new Set<string>();
-      for (const row of next) for (const cell of row) if (cell) present.add(cell.id);
-      for (const it of Object.values(equip)) if (it) present.add(it.id);
-      for (const it of uiItems) {
-        if (present.has(it.id)) continue;
-        let placed = false;
-        for (let r = 0; r < INV_ROWS && !placed; r++) {
-          for (let c = 0; c < INV_COLS && !placed; c++) {
-            if (!next[r][c]) {
-              next[r][c] = it;
-              placed = true;
-            }
+      if (charSwitched && characterId) {
+        const layout = inventoryGridByCharacterId[characterId];
+        if (Array.isArray(layout) && layout.length > 0) {
+          const byId = new Map(invUi.map((it) => [it.id, it]));
+          const next = buildEmptyGrid();
+          for (let i = 0; i < Math.min(layout.length, INV_ROWS * INV_COLS); i++) {
+            const id = layout[i];
+            const r = Math.floor(i / INV_COLS);
+            const c = i % INV_COLS;
+            next[r]![c] = id ? byId.get(id) ?? null : null;
           }
+          return mergeGridPreservingLayout(next, invUi);
         }
+        return placeItemsRowMajor(invUi);
       }
-      return next;
+      return mergeGridPreservingLayout(prev, invUi);
     });
-  }, [uiItems, equip]);
+    const equipIds = {
+      head: nextEq.head?.id ?? null,
+      chest: nextEq.chest?.id ?? null,
+      legs: nextEq.legs?.id ?? null,
+      hands: nextEq.hands?.id ?? null,
+      feet: nextEq.feet?.id ?? null,
+      weaponLeft: nextEq.weaponLeft?.id ?? null,
+      weaponRight: nextEq.weaponRight?.id ?? null,
+      ring: nextEq.ring?.id ?? null,
+      amulet: nextEq.amulet?.id ?? null,
+    } as Record<EquipmentSlot, string | null>;
+    setEquipmentLayout(equipIds);
+  }, [backendItems, characterId, setEquipmentLayout]);
 
   const onDragOver = (ev: React.DragEvent) => ev.preventDefault();
 
@@ -304,31 +445,22 @@ export function InventoryPanel() {
     const targetSlot = bestEquipSlot(item);
     if (!targetSlot) return;
     if (!slotAccepts(targetSlot, item)) return;
-    // Swap inventory cell with whatever is equipped in that slot.
-    setEquip((prevEq) => {
-      const prevItem = prevEq[targetSlot];
-      setGrid((prevGrid) => {
-        const next = prevGrid.map((row) => row.slice());
-        next[srcR]![srcC] = prevItem ?? null;
-        return next;
-      });
-      return { ...prevEq, [targetSlot]: item };
+    if (!token || !characterId) return;
+    void equipItem(token, characterId, item.id).then((payload) => {
+      setInventory(payload.inventoryItems ?? []);
+      if (payload.character) patchCharacter(payload.character);
+      window.dispatchEvent(new CustomEvent('rpg:refreshRegen'));
     });
   };
 
   const unequipToInventory = (slot: EquipmentSlot) => {
     const item = equip[slot];
     if (!item) return;
-    setGrid((prevGrid) => {
-      const spot = firstEmptyCell(prevGrid);
-      if (!spot) {
-        // Inventory full: can't unequip.
-        return prevGrid;
-      }
-      const next = prevGrid.map((row) => row.slice());
-      next[spot.r]![spot.c] = item;
-      setEquip((prevEq) => ({ ...prevEq, [slot]: null }));
-      return next;
+    if (!token || !characterId) return;
+    void unequipItem(token, characterId, item.id).then((payload) => {
+      setInventory(payload.inventoryItems ?? []);
+      if (payload.character) patchCharacter(payload.character);
+      window.dispatchEvent(new CustomEvent('rpg:refreshRegen'));
     });
   };
 
@@ -337,7 +469,6 @@ export function InventoryPanel() {
       const next = prev.map((row) => row.slice());
       const it = next[r]![c];
       if (it?.id) window.dispatchEvent(new CustomEvent('rpg:itemDelete', { detail: { itemId: it.id } }));
-      if (it?.id) setInventory(useGameStore.getState().inventory.filter((x) => x.id !== it.id));
       next[r]![c] = null;
       return next;
     });
@@ -347,7 +478,6 @@ export function InventoryPanel() {
     setEquip((prev) => {
       const it = prev[slot];
       if (it?.id) window.dispatchEvent(new CustomEvent('rpg:itemDelete', { detail: { itemId: it.id } }));
-      if (it?.id) setInventory(useGameStore.getState().inventory.filter((x) => x.id !== it.id));
       return { ...prev, [slot]: null };
     });
   };
@@ -367,41 +497,22 @@ export function InventoryPanel() {
     const item = grid[srcR]?.[srcC];
     if (!item) return;
     if (!slotAccepts(slot, item)) return;
-    setEquip((prevEq) => {
-      const out = prevEq[slot];
-      setGrid((prevGrid) => {
-        const cell = prevGrid[srcR]?.[srcC];
-        if (!cell || cell.id !== item.id) return prevGrid;
-        const next = prevGrid.map((row) => row.slice());
-        next[srcR]![srcC] = out ?? null;
-        return next;
-      });
-      return { ...prevEq, [slot]: item };
+    if (!token || !characterId) return;
+    void equipItem(token, characterId, item.id).then((payload) => {
+      setInventory(payload.inventoryItems ?? []);
+      if (payload.character) patchCharacter(payload.character);
+      window.dispatchEvent(new CustomEvent('rpg:refreshRegen'));
     });
   };
 
   const moveFromEqToInv = (slot: EquipmentSlot, dstR: number, dstC: number) => {
-    setEquip((prevEq) => {
-      const item = prevEq[slot];
-      if (!item) return prevEq;
-      setGrid((prevGrid) => {
-        const next = prevGrid.map((row) => row.slice());
-        const existing = next[dstR][dstC];
-        next[dstR][dstC] = item;
-        // if slot had an item and we swapped, put it back into equip slot if it fits, else drop back to same inv slot is disallowed; simplest: allow swap only if existing can occupy that equip slot.
-        if (existing) {
-          if (!slotAccepts(slot, existing)) {
-            // revert
-            next[dstR][dstC] = existing;
-            return prevGrid;
-          }
-          // swap into equip
-          setEquip((eq2) => ({ ...eq2, [slot]: existing }));
-          return next;
-        }
-        return next;
-      });
-      return { ...prevEq, [slot]: null };
+    const item = equip[slot];
+    if (!item) return;
+    if (!token || !characterId) return;
+    void unequipItem(token, characterId, item.id).then((payload) => {
+      setInventory(payload.inventoryItems ?? []);
+      if (payload.character) patchCharacter(payload.character);
+      window.dispatchEvent(new CustomEvent('rpg:refreshRegen'));
     });
   };
 
@@ -441,6 +552,11 @@ export function InventoryPanel() {
     const payload: DragPayload = { from: 'eq', slot, itemId: item.id };
     ev.dataTransfer.setData('application/x-rpg-item', JSON.stringify(payload));
     ev.dataTransfer.effectAllowed = 'move';
+  };
+
+  const packInventoryRowMajor = () => {
+    const invUi = backendItems.filter((it: any) => !it?.equipped).map(mapBackendItemToUi);
+    setGrid(placeItemsRowMajor(invUi));
   };
 
   return (
@@ -564,7 +680,18 @@ export function InventoryPanel() {
           </div>
 
           <div className="flex-1">
-            <div className="mb-2 text-sm font-bold tracking-wide text-slate-200">Inventory</div>
+            <div className="mb-2 flex items-center justify-between gap-2">
+              <div className="text-sm font-bold tracking-wide text-slate-200">Inventory</div>
+              <button
+                type="button"
+                tabIndex={-1}
+                className="rounded-md border border-slate-600 bg-slate-900/80 px-2 py-1 text-xs font-medium text-slate-200 hover:bg-slate-800"
+                onPointerDown={(e) => e.preventDefault()}
+                onClick={packInventoryRowMajor}
+              >
+                Xếp đồ
+              </button>
+            </div>
             <div
               className="grid gap-1"
               style={{

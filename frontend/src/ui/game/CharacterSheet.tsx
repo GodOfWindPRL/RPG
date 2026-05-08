@@ -4,13 +4,10 @@ import { useGameStore } from '../../systems/gameStore';
 import { emptyEquipmentLayout } from '../../systems/gameStore';
 import { PLAYER_MAX_MOVE_SPEED } from '../../core/world';
 import { PLAYER_BASE_CRIT_MULT, PLAYER_BASE_CRIT_RATE } from '../../core/combatConstants';
-import { mapBackendItemToUi, sumBonuses } from '../../core/items';
 
 export function CharacterSheet() {
   const character = useGameStore((s) => s.character);
   const token = useGameStore((s) => s.token);
-  const equipmentLayout = useGameStore((s) => s.equipmentLayout);
-  const inventory = useGameStore((s) => s.inventory);
   const patchCharacter = useGameStore((s) => s.patchCharacter);
   const setSkills = useGameStore((s) => s.setSkills);
   const setInventory = useGameStore((s) => s.setInventory);
@@ -56,24 +53,37 @@ export function CharacterSheet() {
   const hpPct = Math.min(100, (character.hp / maxHp) * 100);
   const manaPct = Math.min(100, (character.mana / maxMana) * 100);
 
-  const equippedUiItems = Object.values(equipmentLayout)
-    .map((id) => (id ? inventory.find((it) => it.id === id) ?? null : null))
-    .filter(Boolean)
-    .map((it) => mapBackendItemToUi(it!));
-  const bonus = sumBonuses(equippedUiItems);
-  const effAcc = character.accuracy + (bonus.accuracy ?? 0);
-  const effAtkSpd = character.attackSpeed + (bonus.attackSpeed ?? 0);
-  const effMove = PLAYER_MAX_MOVE_SPEED + (bonus.moveSpeed ?? 0);
-  const effPhys = character.corePhysDamage + (bonus.corePhysDamage ?? 0);
-  const effMag = character.coreMagicDamage + (bonus.coreMagicDamage ?? 0);
-  const effDef = character.defense + (bonus.defense ?? 0);
-  const effEva = character.evasion + (bonus.evasion ?? 0);
-  const effCritRate = Math.round((PLAYER_BASE_CRIT_RATE * 100 + (bonus.critRatePct ?? 0)) * 10) / 10;
-  const effCritDmg = Math.round(((PLAYER_BASE_CRIT_MULT - 1) * 100 + (bonus.critDamagePct ?? 0)) * 10) / 10;
-  const effFireRes = bonus.fireResistPct ?? 0;
-  const effColdRes = bonus.coldResistPct ?? 0;
-  const effLightRes = bonus.lightningResistPct ?? 0;
-  const effPoisonRes = bonus.poisonResistPct ?? 0;
+  // All stats below are AUTHORITATIVE values computed by the backend in
+  // `withComputedStats`. The client never re-derives these from items.
+  const effAcc = character.accuracy;
+  const effAtkSpd = character.attackSpeed;
+  const effMove = PLAYER_MAX_MOVE_SPEED + (character.moveSpeedFlat ?? 0);
+  const effPhys = character.corePhysDamage;
+  const effMag = character.coreMagicDamage;
+  const effDef = character.defense;
+  const effEva = character.evasion;
+  const effCritRate = Math.round((PLAYER_BASE_CRIT_RATE * 100 + (character.critRatePct ?? 0)) * 10) / 10;
+  const effCritDmg = Math.round(((PLAYER_BASE_CRIT_MULT - 1) * 100 + (character.critDamagePct ?? 0)) * 10) / 10;
+  const effFireRes = character.fireResistPct ?? 0;
+  const effColdRes = character.coldResistPct ?? 0;
+  const effLightRes = character.lightningResistPct ?? 0;
+  const effPoisonRes = character.poisonResistPct ?? 0;
+  const effLuckPct = Math.min(100, Math.round((character.luckPct ?? 0) * 10) / 10);
+  const hpRegenFlat = Math.max(0, character.hpRegen ?? 0);
+  const hpRegenPctRaw = Math.max(0, character.hpRegenPct ?? 0);
+  const mpRegenFlat = Math.max(0, character.manaRegen ?? 0);
+  const mpRegenPctRaw = Math.max(0, character.manaRegenPct ?? 0);
+  // Effective per-second value (matches backend regen tick exactly).
+  const hpPerSec = Math.round((hpRegenFlat + (maxHp * hpRegenPctRaw) / 100) * 10) / 10;
+  const mpPerSec = Math.round((mpRegenFlat + (maxMana * mpRegenPctRaw) / 100) * 10) / 10;
+  const fireDmg = character.fireDamage ?? 0;
+  const coldDmg = character.coldDamage ?? 0;
+  const lightDmg = character.lightningDamage ?? 0;
+  const poisonDmg = character.poisonDamage ?? 0;
+  const firePct = character.fireDamagePct ?? 0;
+  const coldPct = character.coldDamagePct ?? 0;
+  const lightPct = character.lightningDamagePct ?? 0;
+  const poisonPct = character.poisonDamagePct ?? 0;
 
   return (
     <div className="char-sheet">
@@ -116,25 +126,53 @@ export function CharacterSheet() {
       <div className="char-sheet-stats char-sheet-stats-grid">
         <div className="char-stat-line">
           <span>STR {character.str}</span>
-          <button type="button" className="char-stat-plus" disabled={!canAlloc} onClick={() => add('str')}>
+          <button
+            type="button"
+            tabIndex={-1}
+            className="char-stat-plus"
+            disabled={!canAlloc}
+            onPointerDown={(e) => e.preventDefault()}
+            onClick={() => add('str')}
+          >
             +
           </button>
         </div>
         <div className="char-stat-line">
           <span>AGI {character.agi}</span>
-          <button type="button" className="char-stat-plus" disabled={!canAlloc} onClick={() => add('agi')}>
+          <button
+            type="button"
+            tabIndex={-1}
+            className="char-stat-plus"
+            disabled={!canAlloc}
+            onPointerDown={(e) => e.preventDefault()}
+            onClick={() => add('agi')}
+          >
             +
           </button>
         </div>
         <div className="char-stat-line">
           <span>VIT {character.vit}</span>
-          <button type="button" className="char-stat-plus" disabled={!canAlloc} onClick={() => add('vit')}>
+          <button
+            type="button"
+            tabIndex={-1}
+            className="char-stat-plus"
+            disabled={!canAlloc}
+            onPointerDown={(e) => e.preventDefault()}
+            onClick={() => add('vit')}
+          >
             +
           </button>
         </div>
         <div className="char-stat-line">
           <span>MAG {character.mag}</span>
-          <button type="button" className="char-stat-plus" disabled={!canAlloc} onClick={() => add('mag')}>
+          <button
+            type="button"
+            tabIndex={-1}
+            className="char-stat-plus"
+            disabled={!canAlloc}
+            onPointerDown={(e) => e.preventDefault()}
+            onClick={() => add('mag')}
+          >
             +
           </button>
         </div>
@@ -173,6 +211,34 @@ export function CharacterSheet() {
                 <span className="char-sheet-k">Crit Rate</span>
                 <span>{effCritRate}%</span>
               </div>
+              <div className="char-sheet-row">
+                <span className="char-sheet-k">Fire dmg</span>
+                <span>
+                  {fireDmg}
+                  {firePct ? ` (+${Math.round(firePct * 10) / 10}%)` : ''}
+                </span>
+              </div>
+              <div className="char-sheet-row">
+                <span className="char-sheet-k">Cold dmg</span>
+                <span>
+                  {coldDmg}
+                  {coldPct ? ` (+${Math.round(coldPct * 10) / 10}%)` : ''}
+                </span>
+              </div>
+              <div className="char-sheet-row">
+                <span className="char-sheet-k">Lightning dmg</span>
+                <span>
+                  {lightDmg}
+                  {lightPct ? ` (+${Math.round(lightPct * 10) / 10}%)` : ''}
+                </span>
+              </div>
+              <div className="char-sheet-row">
+                <span className="char-sheet-k">Poison dmg</span>
+                <span>
+                  {poisonDmg}
+                  {poisonPct ? ` (+${Math.round(poisonPct * 10) / 10}%)` : ''}
+                </span>
+              </div>
             </div>
           </div>
 
@@ -203,6 +269,32 @@ export function CharacterSheet() {
                 <span className="char-sheet-k">Poison resist</span>
                 <span>{effPoisonRes}%</span>
               </div>
+              <div className="char-sheet-row">
+                <span className="char-sheet-k">HP Regen</span>
+                <span>
+                  {hpPerSec}/s
+                  {hpRegenFlat || hpRegenPctRaw
+                    ? ` (${hpRegenFlat ? `+${Math.round(hpRegenFlat)}` : ''}${
+                        hpRegenFlat && hpRegenPctRaw ? ' ' : ''
+                      }${hpRegenPctRaw ? `+${Math.round(hpRegenPctRaw * 10) / 10}%` : ''})`
+                    : ''}
+                </span>
+              </div>
+              <div className="char-sheet-row">
+                <span className="char-sheet-k">MP Regen</span>
+                <span>
+                  {mpPerSec}/s
+                  {mpRegenFlat || mpRegenPctRaw
+                    ? ` (${mpRegenFlat ? `+${Math.round(mpRegenFlat)}` : ''}${
+                        mpRegenFlat && mpRegenPctRaw ? ' ' : ''
+                      }${mpRegenPctRaw ? `+${Math.round(mpRegenPctRaw * 10) / 10}%` : ''})`
+                    : ''}
+                </span>
+              </div>
+              <div className="char-sheet-row">
+                <span className="char-sheet-k">Luck</span>
+                <span>{effLuckPct}%</span>
+              </div>
             </div>
           </div>
         </div>
@@ -225,7 +317,13 @@ export function CharacterSheet() {
           <span>{character.skillPoints}</span>
         </div>
       </div>
-      <button type="button" className="char-sheet-reset" onClick={onResetCharacter}>
+      <button
+        type="button"
+        tabIndex={-1}
+        className="char-sheet-reset"
+        onPointerDown={(e) => e.preventDefault()}
+        onClick={onResetCharacter}
+      >
         Reset Character
       </button>
       {err && <div className="char-sheet-err">{err}</div>}

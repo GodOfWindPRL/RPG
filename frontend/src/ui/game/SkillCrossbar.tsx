@@ -17,8 +17,13 @@ export function SkillCrossbar({ onCastSkillIndex }: { onCastSkillIndex: (skillIn
           <button
             key={slot}
             type="button"
+            tabIndex={-1}
             className={`skill-slot ${SLOT_CLASS[slot]} ${entry ? '' : 'skill-slot-empty'}`}
-            onPointerDown={(ev) => ev.stopPropagation()}
+            onPointerDown={(ev) => {
+              ev.stopPropagation();
+              // Keep focus in the game (e.g. Space must not re-activate this button).
+              ev.preventDefault();
+            }}
             onClick={(ev) => {
               ev.stopPropagation();
               if (entry) onCastSkillIndex(skillIndex);

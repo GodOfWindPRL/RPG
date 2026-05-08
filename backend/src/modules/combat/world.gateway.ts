@@ -6,16 +6,17 @@ import {
   calculateBasicAttack,
   calculateSkillDamage,
   damageFromMobHit,
+  getSkillDamageBundleForCast,
   hitChance,
   makeDungeonEnemies,
   totalDamageToTarget,
   type EnemyState,
 } from './combat.service.js';
 import { updateCharacterPosition } from '../player/player.service.js';
-import { grantRolledItem, rollItem } from '../item/item.service.js';
+import { getCharacterLootLuckPercent, grantRolledItem, rollItem } from '../item/item.service.js';
 import { progressCollectQuest, progressKillQuest } from '../quest/quest.service.js';
 import { clampWorldXZ } from '../shared/worldBounds.js';
-import { computeDefense, computeEvasion, computeMaxHp, computeMaxMana } from '../player/stats.js';
+import { computeDefense, computeEvasion, computeMaxHp, computeMaxMana, sumEquippedAffixTotals } from '../player/stats.js';
 import { applyExpGain, type CharacterProgressPayload } from '../player/leveling.service.js';
 import { randomUUID } from 'crypto';
 
@@ -33,6 +34,11 @@ interface PlayerSession {
   vit: number;
   mag: number;
   cooldowns: Record<string, number>;
+  /** Active 3D slash sweep: one mana tick, many collision hits. */
+  slashSwing?: { id: number; expiresAt: number; hitEnemyIds: Set<string> };
+  nextRegenAt?: number;
+  regenCarryHp?: number;
+  regenCarryMp?: number;
 }
 
 function syncSessionProgress(characterId: string, p: CharacterProgressPayload) {
@@ -98,6 +104,33 @@ type EnemyAi = {
 let lastBroadcastAt = 0;
 const enemyAi = new Map<string, EnemyAi>();
 
+function applyElementalDebuffsToEnemy(
+  enemy: EnemyState,
+  byElement: { fire: number; cold: number; lightning: number; poison: number; physic: number },
+  bundle: { elemental: { fire: number; cold: number; lightning: number; poison: number } },
+  now: number,
+) {
+  // Only apply if attacker actually dealt some elemental component after resist.
+  if (!enemy.debuffs) enemy.debuffs = {};
+
+  if (byElement.fire > 0) {
+    enemy.debuffs.burnUntil = Math.max(enemy.debuffs.burnUntil ?? 0, now + 3000);
+  }
+  if (byElement.cold > 0) {
+    enemy.debuffs.slowUntil = Math.max(enemy.debuffs.slowUntil ?? 0, now + 2000);
+  }
+  if (byElement.lightning > 0) {
+    enemy.debuffs.shockUntil = Math.max(enemy.debuffs.shockUntil ?? 0, now + 5000);
+  }
+  if (byElement.poison > 0 || bundle.elemental.poison > 0) {
+    // DPS uses attacker's poison component (roughly per-hit poison after resist).
+    const dps = Math.max(1, Math.round(byElement.poison > 0 ? byElement.poison : bundle.elemental.poison));
+    enemy.debuffs.poisonDps = Math.max(enemy.debuffs.poisonDps ?? 0, dps);
+    enemy.debuffs.poisonUntil = Math.max(enemy.debuffs.poisonUntil ?? 0, now + 5000);
+    enemy.debuffs.nextPoisonTickAt = enemy.debuffs.nextPoisonTickAt ?? now + 1000;
+  }
+}
+
 function clampToHome(v: number, home: number) {
   const clamped = Math.max(home - ENEMY_WANDER_HALF, Math.min(home + ENEMY_WANDER_HALF, v));
   return clampWorldXZ(clamped);
@@ -137,11 +170,55 @@ function ensureEnemyAi() {
   }
 }
 
-function aiTick(io: Server) {
+async function getRegenFromEquipped(characterId: string): Promise<{ hpFlat: number; hpPct: number; mpFlat: number; mpPct: number }> {
+  // Read from the same authoritative source as withComputedStats, so the value
+  // shown on CharacterSheet is exactly what regen uses each tick.
+  const items = await prisma.inventoryItem.findMany({
+    where: { characterId, equipped: true },
+    select: { affixJson: true },
+  });
+  const totals = sumEquippedAffixTotals(items.map((it) => ({ equipped: true, affixJson: it.affixJson })));
+  return {
+    hpFlat: totals.hpRegen,
+    hpPct: totals.hpRegenPct,
+    mpFlat: totals.manaRegen,
+    mpPct: totals.manaRegenPct,
+  };
+}
+
+async function aiTick(io: Server) {
   ensureEnemyAi();
   const now = Date.now();
   const dt = AI_TICK_MS / 1000;
   const AGGRO_DROP_MS = 2500;
+
+  // Player regen tick (per 1s).
+  for (const session of sessions.values()) {
+    if (session.hp <= 0) continue;
+    if ((session.nextRegenAt ?? 0) === 0) session.nextRegenAt = now + 1000;
+    if ((session.nextRegenAt ?? 0) > now) continue;
+    session.nextRegenAt = now + 1000;
+    const src = { level: session.level, str: session.str, agi: session.agi, vit: session.vit, mag: session.mag };
+    const maxHp = computeMaxHp(src);
+    const maxMana = computeMaxMana(src);
+    const r = await getRegenFromEquipped(session.characterId);
+    const hpGain = (r.hpFlat ?? 0) + (maxHp * (r.hpPct ?? 0)) / 100;
+    const mpGain = (r.mpFlat ?? 0) + (maxMana * (r.mpPct ?? 0)) / 100;
+    const carryHp = (session.regenCarryHp ?? 0) + (Number.isFinite(hpGain) ? hpGain : 0);
+    const carryMp = (session.regenCarryMp ?? 0) + (Number.isFinite(mpGain) ? mpGain : 0);
+    const addHp = Math.max(0, Math.floor(carryHp));
+    const addMp = Math.max(0, Math.floor(carryMp));
+    session.regenCarryHp = carryHp - addHp;
+    session.regenCarryMp = carryMp - addMp;
+    const nextHp = Math.min(maxHp, Math.max(0, session.hp + addHp));
+    const nextMp = Math.min(maxMana, Math.max(0, session.mana + addMp));
+    if (nextHp !== session.hp || nextMp !== session.mana) {
+      session.hp = nextHp;
+      session.mana = nextMp;
+      await prisma.character.update({ where: { id: session.characterId }, data: { hp: nextHp, mana: nextMp } });
+      io.to(session.characterId).emit('player:regen', { hp: nextHp, mana: nextMp, maxHp, maxMana });
+    }
+  }
 
   worldEnemies = worldEnemies.filter((e) => {
     if (e.hp > 0) return true;
@@ -185,6 +262,41 @@ function aiTick(io: Server) {
   for (const enemy of worldEnemies.filter((it) => it.hp > 0)) {
     const ai = enemyAi.get(enemy.id);
     if (!ai) continue;
+
+    // Debuff ticking (poison) + expiry cleanup.
+    if (enemy.debuffs) {
+      if ((enemy.debuffs.poisonUntil ?? 0) <= now) {
+        enemy.debuffs.poisonUntil = undefined;
+        enemy.debuffs.poisonDps = undefined;
+        enemy.debuffs.nextPoisonTickAt = undefined;
+      } else if ((enemy.debuffs.nextPoisonTickAt ?? 0) <= now && (enemy.debuffs.poisonDps ?? 0) > 0) {
+        const dmg = Math.max(1, Math.round(enemy.debuffs.poisonDps ?? 0));
+        enemy.hp = Math.max(0, enemy.hp - dmg);
+        enemy.debuffs.nextPoisonTickAt = now + 1000;
+        if (enemy.hp <= 0) markEnemyDead(enemy, now);
+        io.emit('combat:resolved', {
+          enemyId: enemy.id,
+          enemyHp: enemy.hp,
+          damage: dmg,
+          didCrit: false,
+          skillId: 'poison',
+          missed: false,
+          diedAt: enemy.diedAt,
+        });
+      }
+      if ((enemy.debuffs.burnUntil ?? 0) <= now) enemy.debuffs.burnUntil = undefined;
+      if ((enemy.debuffs.slowUntil ?? 0) <= now) enemy.debuffs.slowUntil = undefined;
+      if ((enemy.debuffs.shockUntil ?? 0) <= now) enemy.debuffs.shockUntil = undefined;
+      // Drop object if empty to keep snapshots smaller.
+      if (
+        !enemy.debuffs.burnUntil &&
+        !enemy.debuffs.slowUntil &&
+        !enemy.debuffs.poisonUntil &&
+        !enemy.debuffs.shockUntil
+      ) {
+        enemy.debuffs = undefined;
+      }
+    }
 
     // Resolve delayed melee hit if any.
     if (ai.pendingHitAt != null && now >= ai.pendingHitAt) {
@@ -264,11 +376,13 @@ function aiTick(io: Server) {
         ai.aggroCharacterId = nearest.characterId;
         ai.lastAggroSeenAt = now;
         // Chase + melee.
+        const slowed = (enemy.debuffs?.slowUntil ?? 0) > now;
+        const slowMult = slowed ? 0.5 : 1;
         if (dist > ENEMY_MELEE_REACH) {
           const len = dist || 1;
           const gap = Math.max(0, dist - ENEMY_MELEE_RANGE);
           // Ensure we always make progress when we're "almost" in range (avoids step=0 sticky states).
-          const rawStep = Math.min(ENEMY_CHASE_SPEED * dt, gap);
+          const rawStep = Math.min(ENEMY_CHASE_SPEED * slowMult * dt, gap);
           const step = gap > 0 ? Math.max(rawStep, Math.min(gap, 0.06)) : 0;
           const nx = dx / len;
           const nz = dz / len;
@@ -286,7 +400,7 @@ function aiTick(io: Server) {
 
           // If we're already winding up a hit, don't re-trigger.
           if (ai.pendingHitAt == null && now >= ai.attackReadyAt) {
-            ai.attackReadyAt = now + ENEMY_ATTACK_COOLDOWN_MS;
+            ai.attackReadyAt = now + Math.round(ENEMY_ATTACK_COOLDOWN_MS / slowMult);
             enemy.anim = 'attack';
             enemy.animSeq = (enemy.animSeq ?? 0) + 1;
             ai.aggroCharacterId = nearest.characterId;
@@ -318,7 +432,9 @@ function aiTick(io: Server) {
       const dz = ai.targetZ - enemy.z;
       const dist = Math.hypot(dx, dz);
       if (dist > 0.001) {
-        const step = Math.min(ENEMY_WANDER_SPEED * dt, dist);
+        const slowed = (enemy.debuffs?.slowUntil ?? 0) > now;
+        const slowMult = slowed ? 0.5 : 1;
+        const step = Math.min(ENEMY_WANDER_SPEED * slowMult * dt, dist);
         const nx = dx / dist;
         const nz = dz / dist;
         enemy.x = clampToHome(enemy.x + nx * step, ai.homeX);
@@ -353,31 +469,45 @@ async function applyEnemyDefeatRewards(io: Server, session: PlayerSession, enemy
     syncSessionProgress(session.characterId, progress);
     io.to(session.characterId).emit('character:progress', progress);
   }
-  // Roll loot and drop it on ground near the dead enemy. Player must click to pick up.
-  const roll = await rollItem(Math.min(10, session.level));
-  if (!roll) return;
-  // Slight random offset around death position.
-  const ang = Math.random() * Math.PI * 2;
-  const rad = 0.4 + Math.random() * 1.0;
-  const x = clampWorldXZ(enemy.x + Math.cos(ang) * rad);
-  const z = clampWorldXZ(enemy.z + Math.sin(ang) * rad);
-  const id = randomUUID();
-  const loot: GroundLoot = {
-    id,
-    x,
-    z,
-    createdAt: Date.now(),
-    roll: {
-      definitionId: roll.definition.id,
-      name: roll.definition.name,
-      slot: roll.definition.slot,
-      level: roll.level,
-      rarity: roll.rarity,
-      affixJson: roll.affixJson,
-    },
-  };
-  worldLoot.push(loot);
-  io.to(session.characterId).emit('loot:spawned', { loot });
+  // Loot rules:
+  // - Normal mob: 20% chance to drop 1 item.
+  // - Boss: always drops 5-10 items.
+  const isBoss = enemy.isBoss === true;
+  const dropCount = isBoss ? 5 + Math.floor(Math.random() * 6) : 1;
+  if (!isBoss && Math.random() > 0.2) return;
+
+  const luckPercent = await getCharacterLootLuckPercent(session.characterId);
+  for (let i = 0; i < dropCount; i++) {
+    // This map: keep drops at low level (1-2) regardless of character level.
+    const dropLevel = 1 + Math.floor(Math.random() * 2);
+    const roll = await rollItem(dropLevel, {
+      rarityBoost: 0,
+      luckPercent,
+    });
+    if (!roll) continue;
+    // Slight random offset around death position.
+    const ang = Math.random() * Math.PI * 2;
+    const rad = 0.4 + Math.random() * 1.0;
+    const x = clampWorldXZ(enemy.x + Math.cos(ang) * rad);
+    const z = clampWorldXZ(enemy.z + Math.sin(ang) * rad);
+    const id = randomUUID();
+    const loot: GroundLoot = {
+      id,
+      x,
+      z,
+      createdAt: Date.now(),
+      roll: {
+        definitionId: roll.definition.id,
+        name: roll.definition.name,
+        slot: roll.definition.slot,
+        level: roll.level,
+        rarity: roll.rarity,
+        affixJson: roll.affixJson,
+      },
+    };
+    worldLoot.push(loot);
+    io.to(session.characterId).emit('loot:spawned', { loot });
+  }
 }
 
 export function attachRpgSocket(httpServer: HttpServer) {
@@ -496,6 +626,14 @@ export function attachRpgSocket(httpServer: HttpServer) {
       socket.to(session.characterId).emit('player:moved', { characterId: session.characterId, x, y, z });
     });
 
+    socket.on('player:refreshRegen', () => {
+      const session = sessions.get(socket.id);
+      if (!session) return;
+      session.nextRegenAt = 0;
+      session.regenCarryHp = 0;
+      session.regenCarryMp = 0;
+    });
+
     socket.on('player:revive', async () => {
       const session = sessions.get(socket.id);
       if (!session) return;
@@ -567,12 +705,15 @@ export function attachRpgSocket(httpServer: HttpServer) {
 
       if (targets.length === 0) return;
 
-      const { bundle, accuracy } = await calculateBasicAttack(session.characterId);
+      const { bundle, accuracy, critRatePctBonus, critDamagePctBonus } = await calculateBasicAttack(session.characterId);
+      const critRate = PLAYER_BASE_CRIT_RATE + (Number.isFinite(critRatePctBonus) ? critRatePctBonus / 100 : 0);
+      const critMult = 1 + (((PLAYER_BASE_CRIT_MULT - 1) * 100 + (Number.isFinite(critDamagePctBonus) ? critDamagePctBonus : 0)) / 100);
       for (const t of targets) {
-        const { damage, missed, didCrit } = totalDamageToTarget(bundle, t, accuracy, {
-          critRate: PLAYER_BASE_CRIT_RATE,
-          critMult: PLAYER_BASE_CRIT_MULT,
+        const { damage, missed, didCrit, byElement } = totalDamageToTarget(bundle, t, accuracy, {
+          critRate,
+          critMult,
         });
+        if (!missed && byElement) applyElementalDebuffsToEnemy(t, byElement, bundle, Date.now());
         t.hp = Math.max(0, t.hp - damage);
         if (t.hp <= 0) markEnemyDead(t, Date.now());
         io.to(session.characterId).emit('combat:resolved', {
@@ -590,9 +731,102 @@ export function attachRpgSocket(httpServer: HttpServer) {
       }
     });
 
+    socket.on('skill:slashStart', async ({ swingId }: { swingId?: number }) => {
+      const session = sessions.get(socket.id);
+      if (!session || session.hp <= 0) return;
+      if (typeof swingId !== 'number' || !Number.isFinite(swingId)) return;
+      const now = Date.now();
+      const readyAt = session.cooldowns['slash'] ?? 0;
+      if (now < readyAt) {
+        socket.emit('skill:slashRejected', { swingId, message: 'Slash is on cooldown' });
+        return;
+      }
+      try {
+        const { manaCost, cooldownMs } = await calculateSkillDamage(session.characterId, 'slash');
+        const char = await prisma.character.findUnique({ where: { id: session.characterId } });
+        if (!char || char.mana < manaCost) {
+          socket.emit('skill:slashRejected', { swingId, message: 'Not enough mana' });
+          return;
+        }
+        const nextMana = char.mana - manaCost;
+        await prisma.character.update({
+          where: { id: session.characterId },
+          data: { mana: nextMana },
+        });
+        session.mana = nextMana;
+        session.cooldowns['slash'] = now + cooldownMs;
+        session.slashSwing = { id: swingId, expiresAt: now + 4000, hitEnemyIds: new Set() };
+        socket.emit('skill:slashStarted', { mana: nextMana, swingId });
+      } catch {
+        socket.emit('skill:slashRejected', { swingId, message: 'Cannot use Slash' });
+      }
+    });
+
+    socket.on(
+      'skill:slashHit',
+      async (payload: { swingId?: number; enemyId?: string; yaw?: number }) => {
+        const session = sessions.get(socket.id);
+        if (!session || session.hp <= 0) return;
+        const swingId = payload.swingId;
+        const enemyId = payload.enemyId;
+        const yaw =
+          typeof payload.yaw === 'number' && Number.isFinite(payload.yaw) ? payload.yaw : 0;
+        if (typeof swingId !== 'number' || typeof enemyId !== 'string') return;
+        const sw = session.slashSwing;
+        const now = Date.now();
+        if (!sw || sw.id !== swingId || now > sw.expiresAt) return;
+        if (sw.hitEnemyIds.has(enemyId)) return;
+        const enemy = worldEnemies.find((it) => it.id === enemyId && it.hp > 0);
+        if (!enemy) return;
+        const SLASH_RANGE = 4.2;
+        const dx = enemy.x - session.x;
+        const dz = enemy.z - session.z;
+        const d = Math.hypot(dx, dz);
+        if (d > SLASH_RANGE + 0.95) return;
+        const fx = Math.sin(yaw);
+        const fz = Math.cos(yaw);
+        const nx = dx / (d || 1);
+        const nz = dz / (d || 1);
+        if (nx * fx + nz * fz < -0.2) return;
+        sw.hitEnemyIds.add(enemyId);
+        try {
+          const { bundle, accuracy, critRatePctBonus, critDamagePctBonus } = await getSkillDamageBundleForCast(
+            session.characterId,
+            'slash',
+          );
+          const critRate = PLAYER_BASE_CRIT_RATE + (Number.isFinite(critRatePctBonus) ? critRatePctBonus / 100 : 0);
+          const critMult =
+            1 + (((PLAYER_BASE_CRIT_MULT - 1) * 100 + (Number.isFinite(critDamagePctBonus) ? critDamagePctBonus : 0)) / 100);
+          const { damage, missed, didCrit, byElement } = totalDamageToTarget(bundle, enemy, accuracy, {
+            critRate,
+            critMult,
+          });
+          if (!missed && byElement) applyElementalDebuffsToEnemy(enemy, byElement, bundle, Date.now());
+          enemy.hp = Math.max(0, enemy.hp - damage);
+          if (enemy.hp <= 0) markEnemyDead(enemy, Date.now());
+          io.to(session.characterId).emit('combat:resolved', {
+            enemyId: enemy.id,
+            enemyHp: enemy.hp,
+            damage,
+            didCrit: didCrit ?? false,
+            skillId: 'slash',
+            mana: session.mana,
+            missed,
+            diedAt: enemy.diedAt,
+          });
+          if (enemy.hp <= 0) {
+            await applyEnemyDefeatRewards(io, session, enemy);
+          }
+        } catch {
+          sw.hitEnemyIds.delete(enemyId);
+        }
+      },
+    );
+
     socket.on('skill:cast', async ({ enemyId, skillId }: { enemyId: string; skillId: string }) => {
       const session = sessions.get(socket.id);
       if (!session || session.hp <= 0) return;
+      if (skillId === 'slash') return;
       const enemy = worldEnemies.find((it) => it.id === enemyId && it.hp > 0);
       if (!enemy) return;
       const now = Date.now();
@@ -600,44 +834,28 @@ export function attachRpgSocket(httpServer: HttpServer) {
       if (now < readyAt) return;
 
       try {
-        const { bundle, accuracy, manaCost, cooldownMs } = await calculateSkillDamage(session.characterId, skillId);
+        const { bundle, accuracy, manaCost, cooldownMs, critRatePctBonus, critDamagePctBonus } = await calculateSkillDamage(
+          session.characterId,
+          skillId,
+        );
         if (session.mana < manaCost) return;
         session.mana -= manaCost;
         session.cooldowns[skillId] = now + cooldownMs;
-
-        const isSlash = skillId === 'slash';
-        const slashTargets = isSlash
-          ? worldEnemies.filter((it) => {
-              if (it.hp <= 0) return false;
-              if (it.id === enemy.id) return true;
-              const faceXRaw = enemy.x - session.x;
-              const faceZRaw = enemy.z - session.z;
-              const faceLen = Math.hypot(faceXRaw, faceZRaw) || 1;
-              const faceX = faceXRaw / faceLen;
-              const faceZ = faceZRaw / faceLen;
-              /** Đồng bộ `SLASH_EFFECT_RANGE` trên frontend. */
-              const SLASH_RANGE = 4.2;
-              const dx = it.x - session.x;
-              const dz = it.z - session.z;
-              const d = Math.hypot(dx, dz);
-              if (d > SLASH_RANGE || d < 0.001) return false;
-              const nx = dx / d;
-              const nz = dz / d;
-              const dot = nx * faceX + nz * faceZ;
-              return dot >= 0;
-            })
-          : [enemy];
 
         await prisma.character.update({
           where: { id: session.characterId },
           data: { mana: session.mana },
         });
 
-        for (const target of slashTargets) {
-          const { damage, missed, didCrit } = totalDamageToTarget(bundle, target, accuracy, {
-            critRate: PLAYER_BASE_CRIT_RATE,
-            critMult: PLAYER_BASE_CRIT_MULT,
+        const critRate = PLAYER_BASE_CRIT_RATE + (Number.isFinite(critRatePctBonus) ? critRatePctBonus / 100 : 0);
+        const critMult =
+          1 + (((PLAYER_BASE_CRIT_MULT - 1) * 100 + (Number.isFinite(critDamagePctBonus) ? critDamagePctBonus : 0)) / 100);
+        for (const target of [enemy]) {
+          const { damage, missed, didCrit, byElement } = totalDamageToTarget(bundle, target, accuracy, {
+            critRate,
+            critMult,
           });
+          if (!missed && byElement) applyElementalDebuffsToEnemy(target, byElement, bundle, Date.now());
           target.hp = Math.max(0, target.hp - damage);
           if (target.hp <= 0) markEnemyDead(target, Date.now());
           io.to(session.characterId).emit('combat:resolved', {
@@ -664,6 +882,6 @@ export function attachRpgSocket(httpServer: HttpServer) {
     });
   });
 
-  setInterval(() => aiTick(io), AI_TICK_MS);
+  setInterval(() => void aiTick(io), AI_TICK_MS);
   return io;
 }

@@ -19,38 +19,17 @@ import { RpgDock, type DockPanel } from './ui/game/RpgDock';
 import { SettingsIconButton } from './ui/game/SettingsIconButton';
 import { CharacterSheet } from './ui/game/CharacterSheet';
 import { DeathOverlay } from './ui/game/DeathOverlay';
-
 type GameModal = 'settings' | DockPanel | null;
 
-/** Half-width of the auto-target box on X/Z (world units): 2×15 → 30×30 around player. */
-const NEAR_ENEMY_HALF = 15;
 const SKILL_RANGE = 6;
-const MELEE_RANGE = 3;
 const CHASE_INTERVAL_MS = 80;
-const SKILL_HIT_DELAY_MS = 500;
+const SWING_HIT_AT_PCT = 0.5;
 
-/** Quái gần nhất trong ô (2×NEAR_ENEMY_HALF)² quanh player; không fallback ra toàn map. */
-function findCombatTarget(
-  player: { posX: number; posZ: number },
-  enemies: { id: string; hp: number; x: number; z: number }[],
-) {
-  const alive = enemies.filter((e) => e.hp > 0);
-  if (alive.length === 0) return null;
-  const inBox = alive.filter(
-    (e) => Math.abs(e.x - player.posX) <= NEAR_ENEMY_HALF && Math.abs(e.z - player.posZ) <= NEAR_ENEMY_HALF,
-  );
-  if (inBox.length === 0) return null;
-  let best = inBox[0];
-  let bestD = Math.hypot(best.x - player.posX, best.z - player.posZ);
-  for (let i = 1; i < inBox.length; i++) {
-    const e = inBox[i];
-    const d = Math.hypot(e.x - player.posX, e.z - player.posZ);
-    if (d < bestD) {
-      best = e;
-      bestD = d;
-    }
-  }
-  return best;
+function resolveSelectedTarget() {
+  const s = useGameStore.getState();
+  const id = s.selectedEnemyId;
+  if (!id) return null;
+  return s.enemies.find((e) => e.id === id && e.hp > 0) ?? null;
 }
 
 /** Phím 1–5 ↔ chỉ số mảng `skills` (ô crossbar cùng thứ tự). */
@@ -69,6 +48,7 @@ export default function App() {
   const moveBy = useGameStore((s) => s.moveBy);
   const triggerAttackAnim = useGameStore((s) => s.triggerAttackAnim);
   const triggerSlashFx = useGameStore((s) => s.triggerSlashFx);
+  const setSlashAcceptedSwingId = useGameStore((s) => s.setSlashAcceptedSwingId);
   const setPlayerFacingYaw = useGameStore((s) => s.setPlayerFacingYaw);
   const socketRef = useSocketSync();
   const [modal, setModal] = useState<GameModal>(null);
@@ -77,6 +57,16 @@ export default function App() {
   const wasdKeysRef = useRef({ w: false, a: false, s: false, d: false });
   const moveLoopRafRef = useRef(0);
   const lastMoveLoopTickRef = useRef(0);
+  const nextActionAtRef = useRef(0);
+  const skillReadyAtRef = useRef<Record<string, number>>({});
+
+  const attackPeriodMs = useCallback(() => {
+    const ch = useGameStore.getState().character;
+    const atkSpeed = Math.max(1, ch?.attackSpeed ?? 100); // 100 = 1 hit/sec
+    const ms = Math.round((1000 * 100) / atkSpeed);
+    // Spec: no cooldown & attackSpeed=100% ⇒ period exactly follows attackSpeed (100 => 1s, 200 => 0.5s).
+    return Math.max(60, ms);
+  }, []);
 
   const stopChase = useCallback(() => {
     if (chaseTimerRef.current != null) {
@@ -115,6 +105,16 @@ export default function App() {
   }, [socketRef]);
 
   useEffect(() => {
+    const onRefresh = () => {
+      const sock = socketRef.current;
+      if (!sock) return;
+      sock.emit('player:refreshRegen');
+    };
+    window.addEventListener('rpg:refreshRegen', onRefresh as EventListener);
+    return () => window.removeEventListener('rpg:refreshRegen', onRefresh as EventListener);
+  }, [socketRef]);
+
+  useEffect(() => {
     const onDelete = (ev: Event) => {
       const sock = socketRef.current;
       if (!sock) return;
@@ -125,36 +125,82 @@ export default function App() {
     return () => window.removeEventListener('rpg:itemDelete', onDelete as EventListener);
   }, [socketRef]);
 
+  useEffect(() => {
+    const onRefreshRegen = () => {
+      const sock = socketRef.current;
+      if (!sock) return;
+      sock.emit('player:refreshRegen');
+    };
+    window.addEventListener('rpg:refreshRegen', onRefreshRegen as EventListener);
+    return () => window.removeEventListener('rpg:refreshRegen', onRefreshRegen as EventListener);
+  }, [socketRef]);
+
+  useEffect(() => {
+    const onSlashHit = (ev: Event) => {
+      const sock = socketRef.current;
+      if (!sock) return;
+      const d = (ev as CustomEvent).detail as { enemyId?: string; swingId?: number; yaw?: number };
+      if (d.enemyId == null || d.swingId == null) return;
+      const accepted = useGameStore.getState().slashAcceptedSwingId;
+      if (accepted !== d.swingId) return;
+      sock.emit('skill:slashHit', {
+        enemyId: d.enemyId,
+        swingId: d.swingId,
+        yaw: typeof d.yaw === 'number' && Number.isFinite(d.yaw) ? d.yaw : useGameStore.getState().playerFacingYaw,
+      });
+    };
+    window.addEventListener('rpg:slashHit', onSlashHit as EventListener);
+    return () => window.removeEventListener('rpg:slashHit', onSlashHit as EventListener);
+  }, [socketRef]);
+
   const tryCastSkillIndex = useCallback(
     (skillIndex: number) => {
+      const now = Date.now();
+      if (now < nextActionAtRef.current) return;
       const skill = useGameStore.getState().skills[skillIndex];
       if (!skill) return;
+      const skillId = skill.skill.id;
+      const readyAt = skillReadyAtRef.current[skillId] ?? 0;
+      if (now < readyAt) return;
       stopChase();
       const cur = useGameStore.getState().character;
       if (!cur || cur.hp <= 0) return;
-      const target = findCombatTarget(cur, useGameStore.getState().enemies);
-      if (!target) {
-        // Không có mục tiêu trong phạm vi auto-approach: vẫn vung skill tại chỗ.
-        if (skill.skill.id === 'slash') {
-          const yaw = useGameStore.getState().playerFacingYaw;
-          triggerSlashFx(cur.posX, cur.posZ, yaw);
-        }
-        triggerAttackAnim();
+      if (cur.mana < (skill.skill.manaCost ?? 0)) {
+        useGameStore.getState().setFloatingText('Not enough mana');
+        window.setTimeout(() => useGameStore.getState().setFloatingText(null), 600);
         return;
       }
+      const target = resolveSelectedTarget();
       const sock = socketRef.current;
-      if (!sock) {
-        if (skill.skill.id === 'slash') {
-          const yaw = useGameStore.getState().playerFacingYaw;
-          triggerSlashFx(cur.posX, cur.posZ, yaw);
-        }
-        triggerAttackAnim();
-        return;
-      }
+      // Allow swinging even without a target or socket (local-only animation/VFX).
 
-      setSelectedEnemyId(target.id);
-      const enemyId = target.id;
-      const skillId = skill.skill.id;
+      // Always start the swing immediately.
+      const period = attackPeriodMs();
+      const cdMs = Math.max(0, Math.round(skill.skill.cooldownMs ?? 0));
+      const gateMs = Math.max(period, cdMs);
+      nextActionAtRef.current = Date.now() + gateMs;
+      skillReadyAtRef.current[skillId] = Date.now() + gateMs;
+      if (skillId === 'slash') {
+        const yaw = useGameStore.getState().playerFacingYaw;
+        triggerSlashFx(cur.posX, cur.posZ, yaw, period);
+        if (sock) {
+          const st = useGameStore.getState().slashFx;
+          if (st) {
+            setSlashAcceptedSwingId(null);
+            sock.emit('skill:slashStart', { swingId: st.seq });
+          }
+        }
+      }
+      triggerAttackAnim();
+
+      if (!sock) return;
+
+      // Non-slash skills still need a clicked target (no free-aim).
+      if (skillId !== 'slash' && !target) return;
+      // Slash without a selected target: free-aim only (arc collision).
+      if (skillId === 'slash' && !target) return;
+
+      const enemyId = target!.id;
 
       const fireIfInRange = () => {
         const c = useGameStore.getState().character;
@@ -167,21 +213,21 @@ export default function App() {
         if (dist <= SKILL_RANGE) {
           const yaw = Math.atan2(t.x - c.posX, t.z - c.posZ);
           setPlayerFacingYaw(yaw);
-          if (skillId === 'slash') triggerSlashFx(c.posX, c.posZ, yaw);
-          triggerAttackAnim();
-          const delayedEnemyId = t.id;
-          window.setTimeout(() => {
-            const alive = useGameStore.getState().enemies.some((e) => e.id === delayedEnemyId && e.hp > 0);
-            if (!alive) return;
-            sock.emit('skill:cast', { skillId, enemyId: delayedEnemyId });
-          }, SKILL_HIT_DELAY_MS);
+          if (skillId !== 'slash') {
+            const delayedEnemyId = t.id;
+            window.setTimeout(() => {
+              const alive = useGameStore.getState().enemies.some((e) => e.id === delayedEnemyId && e.hp > 0);
+              if (!alive) return;
+              sock.emit('skill:cast', { skillId, enemyId: delayedEnemyId });
+            }, Math.round(period * SWING_HIT_AT_PCT));
+          }
           return true;
         }
         return false;
       };
 
+      // Only auto-approach if user has explicitly clicked a target.
       if (fireIfInRange()) return;
-
       chaseTimerRef.current = window.setInterval(() => {
         if (fireIfInRange()) {
           stopChase();
@@ -204,62 +250,8 @@ export default function App() {
         if (next) sock.emit('player:move', { x: next.posX, y: next.posY, z: next.posZ });
       }, CHASE_INTERVAL_MS);
     },
-    [socketRef, moveBy, setSelectedEnemyId, stopChase, triggerAttackAnim, triggerSlashFx, setPlayerFacingYaw],
+    [socketRef, moveBy, stopChase, triggerAttackAnim, triggerSlashFx, setPlayerFacingYaw, attackPeriodMs],
   );
-
-  const tryBasicAttack = useCallback(() => {
-    stopChase();
-    const cur = useGameStore.getState().character;
-    if (!cur || cur.hp <= 0) return;
-    const target = findCombatTarget(cur, useGameStore.getState().enemies);
-    if (!target) return;
-    const sock = socketRef.current;
-    if (!sock) return;
-
-    setSelectedEnemyId(target.id);
-    const enemyId = target.id;
-
-    const fireIfInRange = () => {
-      const c = useGameStore.getState().character;
-      const t = useGameStore.getState().enemies.find((e) => e.id === enemyId && e.hp > 0);
-      if (!c || !t) {
-        stopChase();
-        return true;
-      }
-      const dist = Math.hypot(c.posX - t.x, c.posZ - t.z);
-      if (dist <= MELEE_RANGE) {
-        setPlayerFacingYaw(Math.atan2(t.x - c.posX, t.z - c.posZ));
-        triggerAttackAnim();
-        sock.emit('combat:attack', { enemyId: t.id });
-        return true;
-      }
-      return false;
-    };
-
-    if (fireIfInRange()) return;
-
-    chaseTimerRef.current = window.setInterval(() => {
-      if (fireIfInRange()) {
-        stopChase();
-        return;
-      }
-      const c = useGameStore.getState().character;
-      const t = useGameStore.getState().enemies.find((e) => e.id === enemyId && e.hp > 0);
-      if (!c || !t) {
-        stopChase();
-        return;
-      }
-      const dx = t.x - c.posX;
-      const dz = t.z - c.posZ;
-      const len = Math.hypot(dx, dz);
-      if (len < 0.001) return;
-      const chaseStep = PLAYER_MAX_MOVE_SPEED * (CHASE_INTERVAL_MS / 1000);
-      const step = Math.min(chaseStep, Math.max(0, len - MELEE_RANGE + 0.25));
-      moveBy((dx / len) * step, (dz / len) * step);
-      const next = useGameStore.getState().character;
-      if (next) sock.emit('player:move', { x: next.posX, y: next.posY, z: next.posZ });
-    }, CHASE_INTERVAL_MS);
-  }, [socketRef, moveBy, setSelectedEnemyId, stopChase]);
 
   const characterId = character?.id;
 
@@ -351,11 +343,15 @@ export default function App() {
       if (!ch) return;
       if (ch.hp <= 0 && e.key !== 'Escape') return;
 
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        stopChase();
+        setSelectedEnemyId(null);
+        return;
+      }
+
       setWasdFromEvent(e, true);
 
-      if (e.key === ' ') {
-        tryBasicAttack();
-      }
       if (e.key === 'Tab') {
         e.preventDefault();
         const aliveEnemies = useGameStore.getState().enemies.filter((enemy) => enemy.hp > 0);
@@ -394,7 +390,7 @@ export default function App() {
       window.removeEventListener('keyup', onKeyup);
       window.removeEventListener('blur', onBlur);
     };
-  }, [characterId, modal, moveBy, socketRef, setSelectedEnemyId, tryCastSkillIndex, tryBasicAttack, setPlayerFacingYaw]);
+  }, [characterId, modal, moveBy, socketRef, setSelectedEnemyId, stopChase, tryCastSkillIndex, setPlayerFacingYaw]);
 
   if (!token) return <AuthPanel />;
   if (!character) return <CharacterPanel />;

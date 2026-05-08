@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef } from 'react';
 import { useFrame } from '@react-three/fiber';
-import { useAnimations } from '@react-three/drei';
+import { Billboard, Html, useAnimations } from '@react-three/drei';
 import { useLoader } from '@react-three/fiber';
 import * as THREE from 'three';
 import { FBXLoader } from 'three/examples/jsm/loaders/FBXLoader.js';
@@ -14,6 +14,8 @@ const MODEL_SCALE = 0.008;
 const MODEL_OFFSET_Y = 0.35;
 
 export function EnemyMesh({
+  name,
+  isBoss,
   x,
   z,
   yaw,
@@ -24,7 +26,10 @@ export function EnemyMesh({
   diedAt,
   selected,
   onSelect,
+  debuffs,
 }: {
+  name: string;
+  isBoss: boolean;
   x: number;
   z: number;
   yaw: number;
@@ -35,6 +40,7 @@ export function EnemyMesh({
   diedAt?: number;
   selected: boolean;
   onSelect: () => void;
+  debuffs?: { burnUntil?: number; slowUntil?: number; poisonUntil?: number; shockUntil?: number };
 }) {
   const rootRef = useRef<THREE.Group>(null);
   const animRootRef = useRef<THREE.Group>(null);
@@ -58,6 +64,11 @@ export function EnemyMesh({
       m.castShadow = true;
       m.receiveShadow = true;
       m.frustumCulled = false;
+      // Remember original color for debuff tints.
+      const mat = m.material as any;
+      if (mat && mat.color && !m.userData.__baseColor) {
+        m.userData.__baseColor = (mat.color as THREE.Color).clone();
+      }
     });
     const clips: THREE.AnimationClip[] = [];
     if (idleFbx.animations?.[0]) clips.push(idleFbx.animations[0].clone());
@@ -128,6 +139,45 @@ export function EnemyMesh({
     }
   }, [actions, anim, model.meshCount, hp]);
 
+  useFrame(() => {
+    const now = Date.now();
+    const burn = (debuffs?.burnUntil ?? 0) > now;
+    const slow = (debuffs?.slowUntil ?? 0) > now;
+    const poison = (debuffs?.poisonUntil ?? 0) > now;
+    const shock = (debuffs?.shockUntil ?? 0) > now;
+    if (!burn && !slow && !poison && !shock) {
+      // Restore base color.
+      model.scene.traverse((obj) => {
+        const m = obj as THREE.Mesh;
+        if (!m.isMesh) return;
+        const base = m.userData.__baseColor as THREE.Color | undefined;
+        const mat = m.material as any;
+        if (base && mat?.color) (mat.color as THREE.Color).copy(base);
+        if (m.userData.__baseEmissive && mat?.emissive) (mat.emissive as THREE.Color).copy(m.userData.__baseEmissive);
+      });
+      return;
+    }
+    const tint = new THREE.Color(
+      burn ? 1 : poison ? 0.25 : shock ? 1 : 0.35,
+      burn ? 0.18 : poison ? 1 : shock ? 0.85 : 0.65,
+      burn ? 0.18 : poison ? 0.25 : shock ? 0.25 : 1,
+    );
+    model.scene.traverse((obj) => {
+      const m = obj as THREE.Mesh;
+      if (!m.isMesh) return;
+      const base = m.userData.__baseColor as THREE.Color | undefined;
+      const mat = m.material as any;
+      if (!base || !mat?.color) return;
+      const c = mat.color as THREE.Color;
+      c.copy(base).lerp(tint, 0.55);
+      if (mat.emissive) {
+        if (!m.userData.__baseEmissive) m.userData.__baseEmissive = (mat.emissive as THREE.Color).clone();
+        (mat.emissive as THREE.Color).copy(m.userData.__baseEmissive).lerp(tint, 0.35);
+        mat.emissiveIntensity = 0.75;
+      }
+    });
+  });
+
   const lastAttackSeqRef = useRef<number>(0);
   useEffect(() => {
     if (model.meshCount <= 0 || hp <= 0) return;
@@ -189,6 +239,19 @@ export function EnemyMesh({
 
   return (
     <group ref={rootRef} onClick={hp > 0 ? onSelect : undefined}>
+      {isBoss && hp > 0 && (
+        <group position={[0, 0.03, 0]}>
+          <mesh rotation={[-Math.PI / 2, 0, 0]}>
+            <ringGeometry args={[0.85, 1.35, 64]} />
+            <meshBasicMaterial color="#60a5fa" transparent opacity={0.55} side={THREE.DoubleSide} depthWrite={false} />
+          </mesh>
+          <mesh rotation={[-Math.PI / 2, 0, 0]}>
+            <ringGeometry args={[0.6, 0.8, 64]} />
+            <meshBasicMaterial color="#93c5fd" transparent opacity={0.5} side={THREE.DoubleSide} depthWrite={false} />
+          </mesh>
+          <BossAuraSpin />
+        </group>
+      )}
       {model.meshCount > 0 ? (
         <group ref={animRootRef}>
           <primitive object={model.scene} scale={[MODEL_SCALE, MODEL_SCALE, MODEL_SCALE]} position={[0, MODEL_OFFSET_Y, 0]} />
@@ -206,11 +269,92 @@ export function EnemyMesh({
         </mesh>
       )}
       {hp > 0 && (
-        <mesh position={[0, 2.3, 0]}>
-          <boxGeometry args={[Math.max(0.1, hp / maxHp) * 1.5, 0.12, 0.1]} />
-          <meshStandardMaterial color="#22c55e" />
-        </mesh>
+        <>
+          <Billboard follow lockX={false} lockY={false} lockZ={false} position={[0, 2.4, 0]}>
+            <group>
+              <group position={[0, 0.18, 0]}>
+                <Html center distanceFactor={18} style={{ pointerEvents: 'none', userSelect: 'none' }} zIndexRange={[240, 0]}>
+                  <div
+                    style={{
+                      fontSize: 12,
+                      fontWeight: 900,
+                      color: isBoss ? '#60a5fa' : '#ffffff',
+                      textShadow: '0 0 8px rgba(0,0,0,0.9), 0 1px 2px #000',
+                      whiteSpace: 'nowrap',
+                      fontFamily: 'system-ui, Segoe UI, sans-serif',
+                      letterSpacing: 0.2,
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 6,
+                    }}
+                  >
+                    <span>{name || 'Zombie'}</span>
+                    {(() => {
+                      const now = Date.now();
+                      const icons: { k: string; label: string; color: string }[] = [];
+                      if ((debuffs?.burnUntil ?? 0) > now) icons.push({ k: 'burn', label: 'Burn', color: '#ef4444' });
+                      if ((debuffs?.slowUntil ?? 0) > now) icons.push({ k: 'slow', label: 'Slow', color: '#60a5fa' });
+                      if ((debuffs?.poisonUntil ?? 0) > now) icons.push({ k: 'poison', label: 'Poison', color: '#34d399' });
+                      if ((debuffs?.shockUntil ?? 0) > now) icons.push({ k: 'shock', label: 'Shock', color: '#facc15' });
+                      if (icons.length === 0) return null;
+                      return (
+                        <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                          {icons.map((ic) => (
+                            <span
+                              key={ic.k}
+                              title={ic.label}
+                              style={{
+                                width: 14,
+                                height: 14,
+                                borderRadius: 4,
+                                border: '1px solid rgba(248,113,113,0.9)',
+                                background: 'rgba(2,6,23,0.35)',
+                                display: 'inline-flex',
+                                alignItems: 'center',
+                                justifyContent: 'center',
+                                boxShadow: '0 0 10px rgba(0,0,0,0.6)',
+                                color: ic.color,
+                                fontSize: 11,
+                                lineHeight: 1,
+                              }}
+                            >
+                              {ic.k === 'burn' ? '🔥' : ic.k === 'slow' ? '❄️' : ic.k === 'poison' ? '☠️' : '⚡'}
+                            </span>
+                          ))}
+                        </span>
+                      );
+                    })()}
+                  </div>
+                </Html>
+              </group>
+              <mesh>
+                <boxGeometry args={[Math.max(0.1, hp / maxHp) * 1.5, 0.12, 0.1]} />
+                <meshStandardMaterial color="#22c55e" />
+              </mesh>
+            </group>
+          </Billboard>
+        </>
       )}
+    </group>
+  );
+}
+
+function BossAuraSpin() {
+  const ref = useRef<THREE.Group>(null);
+  useFrame((_, dt) => {
+    if (!ref.current) return;
+    ref.current.rotation.y += dt * 1.6;
+  });
+  return (
+    <group ref={ref}>
+      <mesh rotation={[-Math.PI / 2, 0, 0]}>
+        <ringGeometry args={[0.95, 1.55, 64]} />
+        <meshBasicMaterial color="#2563eb" transparent opacity={0.35} side={THREE.DoubleSide} depthWrite={false} />
+      </mesh>
+      <mesh rotation={[-Math.PI / 2, Math.PI / 3, 0]}>
+        <ringGeometry args={[0.75, 0.95, 64]} />
+        <meshBasicMaterial color="#1d4ed8" transparent opacity={0.3} side={THREE.DoubleSide} depthWrite={false} />
+      </mesh>
     </group>
   );
 }
