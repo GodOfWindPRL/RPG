@@ -1084,7 +1084,7 @@ input, button {
   position: relative;
 }
 
-/* Skills: đủ rộng + body cuộn được; chi tiết skill nằm trong flow (không dùng tooltip absolute). */
+/* Skills: đủ rộng + body cuộn; chi tiết khi hover render portal fixed (tràn khỏi modal). */
 .modal-panel.modal-panel-skills {
   width: min(560px, 94vw);
   max-height: min(90vh, 900px);
@@ -1143,6 +1143,19 @@ input, button {
   text-transform: uppercase;
   color: #4ade80;
   font-size: 0.68rem;
+}
+
+/* Portal: không bị clip bởi .modal-panel overflow; z-index trên backdrop (200). */
+.skill-hover-panel.skill-hover-panel--floating {
+  position: fixed;
+  left: 0;
+  top: 0;
+  z-index: 400;
+  width: min(380px, calc(100vw - 20px));
+  max-height: min(88vh, 860px);
+  overflow-x: hidden;
+  overflow-y: auto;
+  pointer-events: auto;
 }
 
 .modal-panel-wide {

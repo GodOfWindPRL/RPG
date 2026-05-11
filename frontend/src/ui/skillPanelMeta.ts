@@ -9,6 +9,15 @@ export const SKILL_DISPLAY_NAME: Record<string, string> = {
   meteor: 'Meteor',
 };
 
+/** Khớp backend `skillDefinitions.requiredLevel` — fallback nếu API không gửi field. */
+export const SKILL_REQUIRED_LEVEL: Record<string, number> = {
+  slash: 1,
+  firebolt: 2,
+  chaosorb: 3,
+  blizzard: 4,
+  meteor: 6,
+};
+
 export const SKILL_DESCRIPTION_VI: Record<string, string> = {
   slash: 'Chém cận chiến theo hướng đang nhìn, gây sát thương vật lý và nguyên tố trên vũ khí.',
   firebolt:
@@ -18,7 +27,7 @@ export const SKILL_DESCRIPTION_VI: Record<string, string> = {
   chaosorb:
     'Phóng quỹ độc theo đường thẳng; nổ khi trúng quái trên đường bay và nổ thêm tại điểm tối đa, gây sát thương độc vùng tròn.',
   meteor:
-    'Triệu hồi một thiên thạch khổng lồ kích thước 4×4 ô rơi thẳng xuống điểm ngắm, gây sát thương hỏa trong phạm vi 4×4 (150% sát thương đòn của skill). Sau khi chạm đất tạo vùng cháy nổ 8×8 ô trong 3 giây, mỗi 0,5 giây gây thêm 20% sát thương đòn của skill mỗi lần tick. Spell luôn trúng.',
+    'Triệu hồi một thiên thạch khổng lồ kích thước 6×6 ô rơi thẳng xuống điểm ngắm, gây sát thương hỏa trong phạm vi 6×6 (150% sát thương đòn của skill). Sau khi chạm đất tạo vùng cháy nổ 8×8 ô trong 3 giây, mỗi 0,5 giây gây thêm 20% sát thương đòn của skill mỗi lần tick. Spell luôn trúng.',
 };
 
 /** Synergy: skill này cộng thêm cho skill khác (UI; combat sẽ nối sau). */

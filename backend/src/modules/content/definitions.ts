@@ -56,7 +56,7 @@ export const skillDefinitions = [
     id: 'meteor',
     name: 'Meteor',
     description:
-      'Spell (Fire). Luôn trúng. Thiên thạch 4×4 rơi xuống điểm ngắm; va chạm tạo vùng cháy 8×8 tick mỗi 0,5s trong 3s.',
+      'Spell (Fire). Luôn trúng. Thiên thạch 6×6 rơi xuống điểm ngắm; va chạm tạo vùng cháy 8×8 tick mỗi 0,5s trong 3s.',
     requiredLevel: 6,
     requiredSkill: 'firebolt',
     baseDamage: 0,

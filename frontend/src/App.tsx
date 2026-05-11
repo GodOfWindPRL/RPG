@@ -45,7 +45,8 @@ function skillKind(skillId: string): SkillKind {
   if (skillId === 'firebolt') return 'ranged';
   if (skillId === 'blizzard') return 'area';
   if (skillId === 'chaosorb') return 'ranged';
-  if (skillId === 'meteor') return 'ranged';
+  /** Ground-target AOE: auto-run into cast range then cast (same UX as Blizzard). */
+  if (skillId === 'meteor') return 'area';
   // default: treat as ranged to avoid auto-chasing unexpectedly
   return 'ranged';
 }
@@ -358,7 +359,11 @@ export default function App() {
         const dist = Math.hypot(c.posX - t.x, c.posZ - t.z);
         const k = skillKind(skillId);
         const range =
-          k === 'melee' ? MELEE_RANGE : skillId === 'blizzard' ? BLIZZARD_CAST_RANGE : SKILL_RANGE;
+          k === 'melee'
+            ? MELEE_RANGE
+            : skillId === 'blizzard' || skillId === 'meteor'
+              ? BLIZZARD_CAST_RANGE
+              : SKILL_RANGE;
         if (k !== 'melee') {
           // Ranged/Area: don't auto-chase; only fire if already in range.
           // (LMB click-to-move is now responsible for repositioning.)
@@ -678,7 +683,7 @@ export default function App() {
         // If out of range, auto-run to range then cast (no premature attack animation).
         if (ch) {
           const dist = Math.hypot(aim.x - ch.posX, aim.z - ch.posZ);
-          const range = id === 'blizzard' ? BLIZZARD_CAST_RANGE : SKILL_RANGE;
+          const range = id === 'blizzard' || id === 'meteor' ? BLIZZARD_CAST_RANGE : SKILL_RANGE;
           if (dist > range) {
             pendingCastRef.current = {
               id: `pc_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
@@ -776,7 +781,7 @@ export default function App() {
   if (!character) return <CharacterPanel />;
 
   return (
-    <div className="game-root">
+    <div className="game-root" onContextMenu={(e) => e.preventDefault()}>
       <div className="scene-wrap">
         <Scene3D />
       </div>

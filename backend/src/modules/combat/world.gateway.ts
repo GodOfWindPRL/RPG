@@ -1246,9 +1246,9 @@ export function attachRpgSocket(httpServer: HttpServer) {
           return;
         }
 
-        // ─── Meteor: thiên thạch 4×4 impact 150% bundle, vùng cháy 8×8 20% mỗi 0.5s × 6 ─
+        // ─── Meteor: thiên thạch 6×6 impact 150% bundle, vùng cháy 8×8 20% mỗi 0.5s × 6 ─
         if (skillId === 'meteor') {
-          const METEOR_HALF = 2; // 4×4
+          const METEOR_HALF = 3; // ~6×6 (bán kính 3m, cùng quy ước như shard 4×4 → r=2)
           const BURN_HALF = 4; // 8×8
           const FALL_MS = Math.max(320, Math.min(900, 560));
           const BURN_TICK_MS = 500;
