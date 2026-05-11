@@ -52,6 +52,19 @@ export const skillDefinitions = [
     damageKind: SkillDamageKind.SPELL,
     element: SkillElement.POISON,
   },
+  {
+    id: 'meteor',
+    name: 'Meteor',
+    description:
+      'Spell (Fire). Luôn trúng. Thiên thạch 4×4 rơi xuống điểm ngắm; va chạm tạo vùng cháy 8×8 tick mỗi 0,5s trong 3s.',
+    requiredLevel: 6,
+    requiredSkill: 'firebolt',
+    baseDamage: 0,
+    manaCost: 46,
+    cooldownMs: 0,
+    damageKind: SkillDamageKind.SPELL,
+    element: SkillElement.FIRE,
+  },
 ];
 
 export const itemDefinitions = [

@@ -47,6 +47,7 @@ function persistBar(characterId: string, name: string, bar: (string | null)[]) {
 function skillEmoji(id: string): string {
   if (id === 'slash') return '⚔️';
   if (id === 'firebolt') return '🔥';
+  if (id === 'meteor') return '☄️';
   if (id === 'blizzard') return '❄️';
   if (id === 'chaosorb') return '☣️';
   if (id === 'iceshard') return '❄️';

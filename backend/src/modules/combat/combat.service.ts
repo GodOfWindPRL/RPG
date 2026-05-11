@@ -33,6 +33,19 @@ export interface DamageBundle {
   elemental: ElementalTotals;
 }
 
+export function scaleDamageBundle(bundle: DamageBundle, factor: number): DamageBundle {
+  const f = Number.isFinite(factor) && factor > 0 ? factor : 1;
+  return {
+    physic: Math.round(bundle.physic * f),
+    elemental: {
+      fire: Math.round(bundle.elemental.fire * f),
+      cold: Math.round(bundle.elemental.cold * f),
+      lightning: Math.round(bundle.elemental.lightning * f),
+      poison: Math.round(bundle.elemental.poison * f),
+    },
+  };
+}
+
 export interface EnemyState {
   id: string;
   type: string;

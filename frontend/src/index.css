@@ -1084,6 +1084,67 @@ input, button {
   position: relative;
 }
 
+/* Skills: đủ rộng + body cuộn được; chi tiết skill nằm trong flow (không dùng tooltip absolute). */
+.modal-panel.modal-panel-skills {
+  width: min(560px, 94vw);
+  max-height: min(90vh, 900px);
+}
+
+.modal-panel.modal-panel-skills .modal-body {
+  overflow-x: hidden;
+  overflow-y: auto;
+  max-height: min(78vh, 760px);
+  padding: 16px 18px 20px;
+}
+
+/* Panel chi tiết skill khi hover — phong cách tooltip RPG (chữ IN HOA, tên xanh lá). */
+.skill-hover-panel {
+  background: linear-gradient(180deg, rgba(8, 12, 22, 0.96) 0%, rgba(3, 6, 14, 0.98) 100%);
+  border: 1px solid rgba(87, 83, 78, 0.55);
+  box-shadow:
+    0 12px 40px rgba(0, 0, 0, 0.75),
+    inset 0 1px 0 rgba(255, 255, 255, 0.06);
+}
+
+.skill-hover-panel .skill-hover-title {
+  font-family: ui-serif, Georgia, 'Times New Roman', serif;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: #4ade80;
+  text-shadow: 0 0 12px rgba(74, 222, 128, 0.35);
+}
+
+.skill-hover-panel .skill-hover-tagline {
+  font-family: ui-serif, Georgia, 'Times New Roman', serif;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #e7e5e4;
+  line-height: 1.35;
+}
+
+.skill-hover-panel .skill-hover-section {
+  font-family: ui-sans-serif, system-ui, sans-serif;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  font-size: 0.65rem;
+  color: #a8a29e;
+}
+
+.skill-hover-panel .skill-hover-stat {
+  font-family: ui-sans-serif, system-ui, sans-serif;
+  font-size: 0.7rem;
+  color: #f5f5f4;
+  letter-spacing: 0.04em;
+}
+
+.skill-hover-panel .skill-hover-synergy-head {
+  font-family: ui-serif, Georgia, 'Times New Roman', serif;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: #4ade80;
+  font-size: 0.68rem;
+}
+
 .modal-panel-wide {
   width: min(720px, 96vw);
   max-height: 92vh;

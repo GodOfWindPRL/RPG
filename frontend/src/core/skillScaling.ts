@@ -17,6 +17,10 @@ export function effectiveSpellManaCost(skillId: string, level: number): number {
     const base = 14;
     return base + Math.floor((3 * (lv - 1) * lv) / 2);
   }
+  if (skillId === 'meteor') {
+    const base = 46;
+    return base + Math.floor((5 * (lv - 1) * lv) / 2);
+  }
   return 0;
 }
 
@@ -37,6 +41,11 @@ export function spellSkillFlatElementBonus(skillId: string, level: number): numb
     for (let n = 2; n <= lv; n++) sum += n;
     return sum;
   }
+  if (skillId === 'meteor') {
+    let sum = 36;
+    for (let n = 2; n <= lv; n++) sum += 5 + n;
+    return sum;
+  }
   return 0;
 }
 
@@ -53,4 +62,18 @@ export function displaySkillManaCost(
   if (level <= 0) return dbManaCost;
   if (isSpellDamageKind(damageKind)) return effectiveSpellManaCost(skillId, level);
   return dbManaCost;
+}
+
+/** Chênh mana khi lên cấp kế tiếp (spell); null nếu không áp dụng. */
+export function spellManaDeltaNext(skillId: string, level: number): number | null {
+  if (level <= 0 || level >= 20) return null;
+  if (!['firebolt', 'blizzard', 'chaosorb', 'meteor'].includes(skillId)) return null;
+  return effectiveSpellManaCost(skillId, level + 1) - effectiveSpellManaCost(skillId, level);
+}
+
+/** Chênh bonus flat nguyên tố khi lên cấp kế tiếp; null nếu không áp dụng. */
+export function spellFlatBonusDeltaNext(skillId: string, level: number): number | null {
+  if (level <= 0 || level >= 20) return null;
+  if (!['firebolt', 'blizzard', 'chaosorb', 'meteor'].includes(skillId)) return null;
+  return spellSkillFlatElementBonus(skillId, level + 1) - spellSkillFlatElementBonus(skillId, level);
 }

@@ -110,6 +110,17 @@ interface GameState {
     radius: number;
     explosions: { t: number; x: number; z: number }[];
   }[];
+  meteorFx: {
+    seq: number | string;
+    aimX: number;
+    aimZ: number;
+    fromX: number;
+    fromZ: number;
+    startMs: number;
+    fallMs: number;
+    burnHalf: number;
+    burnDurationMs: number;
+  }[];
   /** Latest mouse cursor XZ position on ground (for free-aim skills). */
   cursorWorldXZ: { x: number; z: number } | null;
   /** Debuffs currently affecting the player (for HUD icons). */
@@ -185,6 +196,17 @@ interface GameState {
     explosions: { t: number; x: number; z: number }[];
   }) => void;
   removeChaosOrbFx: (seq: number) => void;
+  spawnMeteorFx: (fx: {
+    seq?: number | string;
+    aimX: number;
+    aimZ: number;
+    fromX: number;
+    fromZ: number;
+    fallMs: number;
+    burnHalf: number;
+    burnDurationMs: number;
+  }) => void;
+  removeMeteorFx: (seq: number | string) => void;
   setCursorWorldXZ: (pos: { x: number; z: number } | null) => void;
   setPlayerDebuffs: (debuffs: GameState['playerDebuffs']) => void;
   setPlayerFacingYaw: (yaw: number) => void;
@@ -213,6 +235,7 @@ export const useGameStore = create<GameState>((set) => ({
   fireboltFx: [],
   blizzardFx: [],
   chaosOrbFx: [],
+  meteorFx: [],
   cursorWorldXZ: null,
   playerDebuffs: null,
   skillBar: Array.from({ length: SKILL_BAR_SIZE }, () => null),
@@ -340,6 +363,16 @@ export const useGameStore = create<GameState>((set) => ({
     })),
   removeChaosOrbFx: (seq) =>
     set((state) => ({ chaosOrbFx: state.chaosOrbFx.filter((it) => it.seq !== seq) })),
+  spawnMeteorFx: (fx) =>
+    set((state) => {
+      const seq = fx.seq ?? Date.now() + Math.floor(Math.random() * 1000);
+      const { seq: _s, ...rest } = fx;
+      return {
+        meteorFx: [...state.meteorFx, { seq, startMs: Date.now(), ...rest }],
+      };
+    }),
+  removeMeteorFx: (seq) =>
+    set((state) => ({ meteorFx: state.meteorFx.filter((it) => it.seq !== seq) })),
   setCursorWorldXZ: (cursorWorldXZ) => set({ cursorWorldXZ }),
   setPlayerDebuffs: (playerDebuffs) => set({ playerDebuffs }),
   setPlayerFacingYaw: (playerFacingYaw) => set({ playerFacingYaw }),

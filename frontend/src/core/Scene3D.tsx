@@ -8,6 +8,7 @@ import { SlashArcFx } from '../entities/SlashArcFx';
 import { FireBoltFx } from '../entities/FireBoltFx';
 import { BlizzardFx } from '../entities/BlizzardFx';
 import { ChaosOrbFx } from '../entities/ChaosOrbFx';
+import { MeteorFx } from '../entities/MeteorFx';
 import { useGameStore } from '../systems/gameStore';
 import { CAMERA_BASE_OFFSET, useCameraSettingsStore } from '../systems/cameraSettingsStore';
 import { MAP_SIZE } from './world';
@@ -202,6 +203,7 @@ export function Scene3D() {
   const fireboltFx = useGameStore((s) => s.fireboltFx);
   const blizzardFx = useGameStore((s) => s.blizzardFx);
   const chaosOrbFx = useGameStore((s) => s.chaosOrbFx);
+  const meteorFx = useGameStore((s) => s.meteorFx);
   const playerFacingYaw = useGameStore((s) => s.playerFacingYaw);
   const cameraFov = useCameraSettingsStore((s) => s.fov);
   const distanceScale = useCameraSettingsStore((s) => s.distanceScale);
@@ -271,6 +273,20 @@ export function Scene3D() {
           travelMs={fx.travelMs}
           radius={fx.radius}
           explosions={fx.explosions}
+        />
+      ))}
+      {meteorFx.map((fx) => (
+        <MeteorFx
+          key={String(fx.seq)}
+          seq={fx.seq}
+          aimX={fx.aimX}
+          aimZ={fx.aimZ}
+          fromX={fx.fromX}
+          fromZ={fx.fromZ}
+          startMs={fx.startMs}
+          fallMs={fx.fallMs}
+          burnHalf={fx.burnHalf}
+          burnDurationMs={fx.burnDurationMs}
         />
       ))}
       {groundLoot.map((l) => (

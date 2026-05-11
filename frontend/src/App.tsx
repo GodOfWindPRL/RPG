@@ -45,6 +45,7 @@ function skillKind(skillId: string): SkillKind {
   if (skillId === 'firebolt') return 'ranged';
   if (skillId === 'blizzard') return 'area';
   if (skillId === 'chaosorb') return 'ranged';
+  if (skillId === 'meteor') return 'ranged';
   // default: treat as ranged to avoid auto-chasing unexpectedly
   return 'ranged';
 }
@@ -333,6 +334,11 @@ export default function App() {
             shardRadius: BLIZZARD_SHARD_RADIUS_M,
           });
           sock.emit('skill:cast', { skillId, x: cursor.x, z: cursor.z });
+        } else if (skillId === 'meteor') {
+          const cursor = useGameStore.getState().cursorWorldXZ;
+          if (!cursor) return;
+          if (Math.abs(cursor.x - caster.posX) > FREE_AIM_HALF_M || Math.abs(cursor.z - caster.posZ) > FREE_AIM_HALF_M) return;
+          sock.emit('skill:cast', { skillId, x: cursor.x, z: cursor.z });
         } else {
           // Other skills still require a target for now.
           return;
@@ -390,6 +396,7 @@ export default function App() {
                   shardRadius: BLIZZARD_SHARD_RADIUS_M,
                 });
               }
+              // Meteor VFX is driven by server `skill:fxMeteor` (same pattern as Chaos Orb).
               sock.emit('skill:cast', { skillId, enemyId: delayedEnemyId });
             }, Math.round(period * SWING_HIT_AT_PCT));
           }
@@ -819,13 +826,8 @@ export default function App() {
         </ModalShell>
       )}
       {modal === 'skills' && (
-        <ModalShell title="Skills" onClose={() => setModal(null)}>
-          <SkillPanel
-            onCast={(skillId) => {
-              const idx = useGameStore.getState().skills.findIndex((s) => s.skill.id === skillId);
-              if (idx >= 0) tryCastSkillIndex(idx);
-            }}
-          />
+        <ModalShell title="Skills" onClose={() => setModal(null)} panelClassName="modal-panel-skills">
+          <SkillPanel />
         </ModalShell>
       )}
     </div>

@@ -188,6 +188,35 @@ export function useSocketSync() {
         });
       },
     );
+    socket.on(
+      'skill:fxMeteor',
+      (p: {
+        seq: string;
+        aimX: number;
+        aimZ: number;
+        fromX: number;
+        fromZ: number;
+        fallMs: number;
+        burnHalf: number;
+        burnDurationMs: number;
+        mana?: number;
+      }) => {
+        if (typeof p.mana === 'number') {
+          const ch = useGameStore.getState().character;
+          if (ch) setManaHp(ch.hp, p.mana);
+        }
+        useGameStore.getState().spawnMeteorFx({
+          seq: p.seq,
+          aimX: p.aimX,
+          aimZ: p.aimZ,
+          fromX: p.fromX,
+          fromZ: p.fromZ,
+          fallMs: p.fallMs,
+          burnHalf: p.burnHalf,
+          burnDurationMs: p.burnDurationMs,
+        });
+      },
+    );
     socket.on('inventory:full', () => {
       const ch = useGameStore.getState().character;
       if (!ch) return;

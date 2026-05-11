@@ -19,6 +19,10 @@ export function effectiveSpellManaCost(skillId: string, level: number): number {
     const base = 14;
     return base + Math.floor((3 * (lv - 1) * lv) / 2);
   }
+  if (skillId === 'meteor') {
+    const base = 46;
+    return base + Math.floor((5 * (lv - 1) * lv) / 2);
+  }
   return 0;
 }
 
@@ -38,6 +42,11 @@ export function spellSkillFlatElementBonus(skillId: string, level: number): numb
   if (skillId === 'chaosorb') {
     let sum = 10;
     for (let n = 2; n <= lv; n++) sum += n;
+    return sum;
+  }
+  if (skillId === 'meteor') {
+    let sum = 36;
+    for (let n = 2; n <= lv; n++) sum += 5 + n;
     return sum;
   }
   return 0;

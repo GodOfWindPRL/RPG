@@ -10,6 +10,7 @@ import {
   hitChance,
   makeDungeonEnemies,
   totalDamageToTarget,
+  scaleDamageBundle,
   type EnemyState,
 } from './combat.service.js';
 import { updateCharacterPosition } from '../player/player.service.js';
@@ -1242,6 +1243,86 @@ export function attachRpgSocket(httpServer: HttpServer) {
               }
             }, i * TICK_MS);
           }
+          return;
+        }
+
+        // ─── Meteor: thiên thạch 4×4 impact 150% bundle, vùng cháy 8×8 20% mỗi 0.5s × 6 ─
+        if (skillId === 'meteor') {
+          const METEOR_HALF = 2; // 4×4
+          const BURN_HALF = 4; // 8×8
+          const FALL_MS = Math.max(320, Math.min(900, 560));
+          const BURN_TICK_MS = 500;
+          const BURN_TICKS = 6;
+          const impactBundle = scaleDamageBundle(bundle, 1.5);
+          const dotBundle = scaleDamageBundle(bundle, 0.2);
+          io.to(session.characterId).emit('skill:fxMeteor', {
+            seq: fxSeq,
+            aimX,
+            aimZ,
+            fromX: session.x,
+            fromZ: session.z,
+            fallMs: FALL_MS,
+            meteorHalf: METEOR_HALF,
+            burnHalf: BURN_HALF,
+            burnDurationMs: BURN_TICK_MS * BURN_TICKS,
+            mana: session.mana,
+          });
+          setTimeout(() => {
+            const nowImpact = Date.now();
+            const hitImpact = worldEnemies.filter(
+              (e) => e.hp > 0 && Math.hypot(e.x - aimX, e.z - aimZ) <= METEOR_HALF,
+            );
+            for (const target of hitImpact) {
+              const { damage, missed, didCrit, byElement } = totalDamageToTarget(impactBundle, target, accuracy, {
+                critRate,
+                critMult,
+                spellAlwaysHits,
+              });
+              if (!missed && byElement) applyElementalDebuffsToEnemy(target, byElement, impactBundle, nowImpact);
+              target.hp = Math.max(0, target.hp - damage);
+              if (target.hp <= 0) markEnemyDead(target, nowImpact);
+              io.to(session.characterId).emit('combat:resolved', {
+                enemyId: target.id,
+                enemyHp: target.hp,
+                damage,
+                didCrit: didCrit ?? false,
+                skillId,
+                mana: session.mana,
+                missed,
+                diedAt: target.diedAt,
+              });
+              if (target.hp <= 0) void applyEnemyDefeatRewards(io, session, target);
+            }
+            for (let i = 0; i < BURN_TICKS; i++) {
+              setTimeout(() => {
+                const tBurn = Date.now();
+                const inBurn = worldEnemies.filter(
+                  (e) => e.hp > 0 && Math.hypot(e.x - aimX, e.z - aimZ) <= BURN_HALF,
+                );
+                for (const target of inBurn) {
+                  const { damage, missed, didCrit, byElement } = totalDamageToTarget(dotBundle, target, accuracy, {
+                    critRate,
+                    critMult,
+                    spellAlwaysHits,
+                  });
+                  if (!missed && byElement) applyElementalDebuffsToEnemy(target, byElement, dotBundle, tBurn);
+                  target.hp = Math.max(0, target.hp - damage);
+                  if (target.hp <= 0) markEnemyDead(target, tBurn);
+                  io.to(session.characterId).emit('combat:resolved', {
+                    enemyId: target.id,
+                    enemyHp: target.hp,
+                    damage,
+                    didCrit: didCrit ?? false,
+                    skillId,
+                    mana: session.mana,
+                    missed,
+                    diedAt: target.diedAt,
+                  });
+                  if (target.hp <= 0) void applyEnemyDefeatRewards(io, session, target);
+                }
+              }, i * BURN_TICK_MS);
+            }
+          }, FALL_MS);
           return;
         }
 
