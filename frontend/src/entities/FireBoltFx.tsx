@@ -9,7 +9,7 @@ const PROJECTILE_Y = 1.05;
 const EXPLOSION_MS = 600;
 
 type FireBoltFxProps = {
-  seq: number;
+  seq: number | string;
   fromX: number;
   fromZ: number;
   toX: number;

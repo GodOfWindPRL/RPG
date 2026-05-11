@@ -327,6 +327,18 @@ function skillAttackDamageMultiplier(skillId: string, learnedLevel: number): num
     // Slash: attack damage 100% at lv1; +5% per level.
     return 1 + (lv - 1) * 0.05;
   }
+  if (skillId === 'chainlightning') {
+    // L1 = 50% spell bundle; +5% mỗi cấp.
+    return 0.5 + (lv - 1) * 0.05;
+  }
+  if (skillId === 'splitarrow') {
+    // L1 = 80% attack damage; +5% mỗi cấp.
+    return 0.8 + (lv - 1) * 0.05;
+  }
+  if (skillId === 'savage') {
+    // L1 = 80% attack damage; +4% mỗi cấp.
+    return 0.8 + (lv - 1) * 0.04;
+  }
   return 1;
 }
 

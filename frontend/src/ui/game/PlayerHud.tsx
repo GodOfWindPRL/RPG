@@ -4,7 +4,23 @@ export function PlayerHud() {
   const character = useGameStore((s) => s.character);
   const floatingText = useGameStore((s) => s.floatingText);
   const playerDebuffs = useGameStore((s) => s.playerDebuffs);
+  const playerBuffs = useGameStore((s) => s.playerBuffs);
   if (!character) return null;
+
+  const now = Date.now();
+  const buffIcons: { k: string; label: string; emoji: string; cdSec: number; title: string }[] = [];
+  if ((playerBuffs?.hasteUntil ?? 0) > now) {
+    const cdMs = (playerBuffs?.hasteUntil ?? 0) - now;
+    const cdSec = Math.max(0, Math.ceil(cdMs / 1000));
+    const pct = playerBuffs?.hastePct ?? 0;
+    buffIcons.push({
+      k: 'haste',
+      label: 'Haste',
+      emoji: '💨',
+      cdSec,
+      title: `Haste\n+${pct}% Attack Speed\n+${pct}% Move Speed\n${cdSec}s remaining`,
+    });
+  }
 
   return (
     <div className="player-hud">
@@ -46,6 +62,19 @@ export function PlayerHud() {
           </div>
         </div>
       </div>
+
+      {buffIcons.length ? (
+        <div className="player-hud-buffs" aria-label="Active buffs">
+          {buffIcons.map((b) => (
+            <div key={b.k} className="player-hud-buff-wrap" title={b.title}>
+              <div className="player-hud-buff" aria-label={b.label}>
+                {b.emoji}
+              </div>
+              <div className="player-hud-buff-cd">{b.cdSec}s</div>
+            </div>
+          ))}
+        </div>
+      ) : null}
 
       {floatingText && <div className="player-hud-float">{floatingText}</div>}
     </div>

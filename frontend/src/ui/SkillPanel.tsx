@@ -5,18 +5,26 @@ import { upgradeSkill } from '../network/api';
 import { displaySkillManaCost } from '../core/skillScaling';
 import {
   SKILL_DESCRIPTION_VI,
+  SKILL_CAST_KIND,
   SKILL_DISPLAY_NAME,
   SKILL_REQUIRED_LEVEL,
+  SKILL_REQUIRED_PARENT,
   SKILL_SYNERGY_GRANTS_OTHERS,
+  requiredPlayerLevelForNextSkillRank,
   skillTypeLabel,
   spellOptsLabel,
 } from './skillPanelMeta';
 
-const SKILL_ORDER = ['slash', 'firebolt', 'meteor', 'blizzard', 'chaosorb'] as const;
+const SKILL_ORDER = ['slash', 'savage', 'blink', 'haste', 'splitarrow', 'firebolt', 'chainlightning', 'meteor', 'blizzard', 'chaosorb'] as const;
 
 const SKILL_ICONS: Record<string, string> = {
   slash: '⚔️',
+  savage: '🗡️',
+  blink: '🌀',
+  haste: '💨',
+  splitarrow: '🏹',
   firebolt: '🔥',
+  chainlightning: '⚡',
   meteor: '☄️',
   blizzard: '❄️',
   chaosorb: '☣️',
@@ -31,12 +39,27 @@ type StatRow = { k: string; v: string };
 
 function effectiveDamageKind(skillId: string, dk: string | undefined): string | undefined {
   if (dk === 'SPELL' || dk === 'MAGIC' || dk === 'PHYSIC') return dk;
-  if (skillId === 'firebolt' || skillId === 'meteor' || skillId === 'blizzard' || skillId === 'chaosorb') return 'SPELL';
+  if (
+    skillId === 'firebolt' ||
+    skillId === 'chainlightning' ||
+    skillId === 'meteor' ||
+    skillId === 'blizzard' ||
+    skillId === 'chaosorb'
+  )
+    return 'SPELL';
   return 'PHYSIC';
 }
 
 function defaultManaDb(skillId: string): number {
-  const m: Record<string, number> = { firebolt: 12, blizzard: 30, chaosorb: 14, meteor: 46, slash: 0 };
+  const m: Record<string, number> = {
+    firebolt: 12,
+    chainlightning: 18,
+    blizzard: 30,
+    chaosorb: 14,
+    meteor: 46,
+    splitarrow: 0,
+    slash: 0,
+  };
   return m[skillId] ?? 0;
 }
 
@@ -54,7 +77,21 @@ function buildStatRows(
     level > 0 ? String(displaySkillManaCost(skillId, level, effDk, manaDb)) : '—';
   const isSlash = skillId === 'slash';
   const dmgPct =
-    isSlash && level > 0 ? `${slashDamagePct(level)}%` : level > 0 ? '100%' : '—';
+    level <= 0
+      ? '—'
+      : isSlash
+        ? `${slashDamagePct(level)}%`
+        : skillId === 'savage'
+          ? `${80 + (level - 1) * 4}%`
+          : skillId === 'splitarrow'
+            ? `${80 + (level - 1) * 5}%`
+            : skillId === 'chainlightning'
+              ? `${50 + (level - 1) * 5}%`
+              : skillId === 'blink' || skillId === 'haste'
+                ? '—'
+                : effDk === 'SPELL'
+                  ? '—'
+                  : '100%';
   const atkSpd = level > 0 ? '100%' : '—';
   return [
     { k: 'Mana', v: mana },
@@ -165,7 +202,13 @@ export function SkillPanel() {
   const name =
     row?.skill.name ?? (activeSkillId ? (SKILL_DISPLAY_NAME[activeSkillId] ?? activeSkillId) : '') ?? '';
   const effKind = activeSkillId ? effectiveDamageKind(activeSkillId, dk) : undefined;
+  const castKind =
+    (row?.skill.castKind ??
+      (activeSkillId ? (SKILL_CAST_KIND[activeSkillId] ?? null) : null)) ??
+    null;
   const typeLine = activeSkillId ? skillTypeLabel(activeSkillId, effKind) : '';
+  const castLine =
+    castKind === 'MELEE' ? 'Melee' : castKind === 'RANGED' ? 'Ranged' : castKind === 'AREA' ? 'Area' : null;
   const longDesc = activeSkillId ? (SKILL_DESCRIPTION_VI[activeSkillId] ?? '') : '';
 
   const currentRows = useMemo(
@@ -183,20 +226,33 @@ export function SkillPanel() {
 
   const isSpell =
     activeSkillId &&
-    (['firebolt', 'meteor', 'blizzard', 'chaosorb'].includes(activeSkillId) ||
+    (['firebolt', 'chainlightning', 'meteor', 'blizzard', 'chaosorb'].includes(activeSkillId) ||
       dk === 'SPELL' ||
       dk === 'MAGIC');
   const ownSpellOpts = isSpell && level > 0 && activeSkillId ? spellOptsLabel(activeSkillId, level) : null;
 
-  const requiredLevelForActive =
+  const baseRequiredActive =
     activeSkillId != null
       ? (row?.skill.requiredLevel ?? SKILL_REQUIRED_LEVEL[activeSkillId] ?? 1)
       : 1;
+  const parentSkillIdActive =
+    activeSkillId != null
+      ? (row?.skill.requiredSkill ?? SKILL_REQUIRED_PARENT[activeSkillId] ?? null)
+      : null;
+  const nextRankPlayerLevelActive =
+    activeSkillId != null ? requiredPlayerLevelForNextSkillRank(baseRequiredActive, level) : 1;
+  const hasParentSkillActive =
+    !parentSkillIdActive || (byId.get(parentSkillIdActive)?.level ?? 0) >= 1;
   const showLevelRequirementWarning =
     Boolean(activeSkillId) &&
-    level <= 0 &&
     character != null &&
-    character.level < requiredLevelForActive;
+    level < 20 &&
+    character.level < nextRankPlayerLevelActive;
+  const showParentSkillWarning =
+    Boolean(activeSkillId) &&
+    level <= 0 &&
+    Boolean(parentSkillIdActive) &&
+    !hasParentSkillActive;
 
   useLayoutEffect(() => {
     if (!activeSkillId) return;
@@ -211,6 +267,8 @@ export function SkillPanel() {
     currentRows,
     nextRows,
     showLevelRequirementWarning,
+    showParentSkillWarning,
+    nextRankPlayerLevelActive,
     repositionFloating,
   ]);
 
@@ -243,14 +301,28 @@ export function SkillPanel() {
       <div className="flex flex-col gap-3">
         <header>
           <h3 className="skill-hover-title text-base font-bold">{name}</h3>
-          <p className="mt-1 text-[11px] uppercase tracking-[0.1em] text-stone-300">
+          <p className="mt-1 text-[11px] uppercase tracking-widest text-stone-300">
             Loại: <span className="text-stone-100">{typeLine}</span>
+            {castLine ? (
+              <>
+                {' '}
+                <span className="text-stone-500">·</span>{' '}
+                <span className="text-stone-100">{castLine}</span>
+              </>
+            ) : null}
           </p>
         </header>
 
         {showLevelRequirementWarning ? (
           <p className="text-[12px] font-semibold tracking-wide text-rose-400">
-            Yêu cầu lv: {requiredLevelForActive}
+            Yêu cầu nhân vật ≥ lv {nextRankPlayerLevelActive}
+            {level > 0 ? ` để lên cấp ${level + 1}` : ' để học cấp 1'}
+          </p>
+        ) : null}
+
+        {showParentSkillWarning && parentSkillIdActive ? (
+          <p className="text-[12px] font-semibold tracking-wide text-rose-400">
+            Yêu cầu: {SKILL_DISPLAY_NAME[parentSkillIdActive] ?? parentSkillIdActive}
           </p>
         ) : null}
 
@@ -350,7 +422,14 @@ export function SkillPanel() {
           {SKILL_ORDER.map((skillId) => {
             const srow = byId.get(skillId);
             const lv = srow?.level ?? 0;
-            const canUpgrade = Boolean(character && token && skillPoints > 0 && lv < 20);
+            const baseReq = srow?.skill.requiredLevel ?? SKILL_REQUIRED_LEVEL[skillId] ?? 1;
+            const parentId = srow?.skill.requiredSkill ?? SKILL_REQUIRED_PARENT[skillId] ?? null;
+            const needPlayerLv = requiredPlayerLevelForNextSkillRank(baseReq, lv);
+            const parentOk = !parentId || (byId.get(parentId)?.level ?? 0) >= 1;
+            const levelOk = !character || character.level >= needPlayerLv;
+            const canUpgrade = Boolean(
+              character && token && skillPoints > 0 && lv < 20 && levelOk && parentOk,
+            );
             const isActive = activeSkillId === skillId;
 
             return (

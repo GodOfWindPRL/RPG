@@ -65,6 +65,10 @@ interface GameState {
     rarity: string;
   }[];
   attackAnimSeq: number;
+  /** Skill id that triggered the latest attack animation (used to select clip). */
+  attackAnimSkillId: string | null;
+  /** When the latest attack animation was triggered (Date.now()). */
+  attackAnimStartedAt: number;
   playerFacingYaw: number;
   /** VFX Slash: snapshot vị trí / hướng lúc vung (không bám theo player). */
   slashFx: { seq: number; x: number; z: number; yaw: number; durationMs?: number } | null;
@@ -72,7 +76,7 @@ interface GameState {
   slashAcceptedSwingId: number | null;
   /** Fireball projectiles in flight; cleared by FireBoltFx after explosion fades. */
   fireboltFx: {
-    seq: number;
+    seq: number | string;
     fromX: number;
     fromZ: number;
     toX: number;
@@ -121,10 +125,22 @@ interface GameState {
     burnHalf: number;
     burnDurationMs: number;
   }[];
+  chainLightningFx: {
+    seq: number | string;
+    segments: { fromX: number; fromZ: number; toX: number; toZ: number }[];
+    segmentMs: number;
+    startMs: number;
+  }[];
+  splitArrowFx: {
+    seq: number | string;
+    arrows: { fromX: number; fromZ: number; toX: number; toZ: number; travelMs: number }[];
+    startMs: number;
+  }[];
   /** Latest mouse cursor XZ position on ground (for free-aim skills). */
   cursorWorldXZ: { x: number; z: number } | null;
   /** Debuffs currently affecting the player (for HUD icons). */
   playerDebuffs: { burnUntil?: number; slowUntil?: number; poisonUntil?: number; shockUntil?: number } | null;
+  playerBuffs: { hasteUntil?: number; hastePct?: number } | null;
   /** Hotbar gắn skill cho phím 1-6 (lưu skill.id). null = ô trống. */
   skillBar: (string | null)[];
   /** Mouse skill bar: 0=Left, 1=Right, 2=Middle. Stores skill.id. */
@@ -133,6 +149,8 @@ interface GameState {
   itemBar: (string | null)[];
   /** Khi đang mở picker chọn skill/item, các phím tắt 1-6/F1-F4 nên bị tắt. */
   hotbarPickerOpen: boolean;
+  /** Client-side cooldown gate per skillId (ms epoch). */
+  skillCooldownReadyAt: Record<string, number>;
   setSkillBar: (bar: (string | null)[]) => void;
   setMouseSkillBar: (bar: (string | null)[]) => void;
   setItemBar: (bar: (string | null)[]) => void;
@@ -140,6 +158,7 @@ interface GameState {
   setMouseSkillBarSlot: (slot: number, skillId: string | null) => void;
   setItemBarSlot: (slot: number, itemId: string | null) => void;
   setHotbarPickerOpen: (open: boolean) => void;
+  setSkillCooldownReadyAt: (skillId: string, readyAt: number) => void;
   setToken: (token: string | null) => void;
   setCharacter: (character: Character | null) => void;
   setEnemies: (enemies: Enemy[]) => void;
@@ -166,10 +185,12 @@ interface GameState {
   }) => void;
   removeWorldPopup: (id: string) => void;
   triggerAttackAnim: () => void;
+  setAttackAnimSkillId: (skillId: string | null) => void;
   triggerSlashFx: (x: number, z: number, yaw: number, durationMs?: number) => void;
   clearSlashFx: () => void;
   setSlashAcceptedSwingId: (swingId: number | null) => void;
   spawnFireboltFx: (fx: {
+    seq?: number | string;
     fromX: number;
     fromZ: number;
     toX: number;
@@ -177,7 +198,7 @@ interface GameState {
     travelMs: number;
     radius: number;
   }) => void;
-  removeFireboltFx: (seq: number) => void;
+  removeFireboltFx: (seq: number | string) => void;
   spawnBlizzardFx: (fx: {
     centerX: number;
     centerZ: number;
@@ -207,8 +228,20 @@ interface GameState {
     burnDurationMs: number;
   }) => void;
   removeMeteorFx: (seq: number | string) => void;
+  spawnChainLightningFx: (fx: {
+    seq?: number | string;
+    segments: { fromX: number; fromZ: number; toX: number; toZ: number }[];
+    segmentMs: number;
+  }) => void;
+  removeChainLightningFx: (seq: number | string) => void;
+  spawnSplitArrowFx: (fx: {
+    seq?: number | string;
+    arrows: { fromX: number; fromZ: number; toX: number; toZ: number; travelMs: number }[];
+  }) => void;
+  removeSplitArrowFx: (seq: number | string) => void;
   setCursorWorldXZ: (pos: { x: number; z: number } | null) => void;
   setPlayerDebuffs: (debuffs: GameState['playerDebuffs']) => void;
+  setPlayerBuffs: (buffs: GameState['playerBuffs']) => void;
   setPlayerFacingYaw: (yaw: number) => void;
   moveBy: (dx: number, dz: number) => void;
   setManaHp: (hp: number, mana: number, maxHp?: number, maxMana?: number) => void;
@@ -229,6 +262,8 @@ export const useGameStore = create<GameState>((set) => ({
   worldPopups: [],
   groundLoot: [],
   attackAnimSeq: 0,
+  attackAnimSkillId: null,
+  attackAnimStartedAt: 0,
   playerFacingYaw: 0,
   slashFx: null,
   slashAcceptedSwingId: null,
@@ -236,12 +271,16 @@ export const useGameStore = create<GameState>((set) => ({
   blizzardFx: [],
   chaosOrbFx: [],
   meteorFx: [],
+  chainLightningFx: [],
+  splitArrowFx: [],
   cursorWorldXZ: null,
   playerDebuffs: null,
+  playerBuffs: null,
   skillBar: Array.from({ length: SKILL_BAR_SIZE }, () => null),
   mouseSkillBar: Array.from({ length: MOUSE_SKILL_BAR_SIZE }, () => null),
   itemBar: Array.from({ length: ITEM_BAR_SIZE }, () => null),
   hotbarPickerOpen: false,
+  skillCooldownReadyAt: {},
   setSkillBar: (bar) =>
     set(() => ({
       skillBar: Array.from({ length: SKILL_BAR_SIZE }, (_, i) => (typeof bar[i] === 'string' ? bar[i] : null)),
@@ -270,6 +309,8 @@ export const useGameStore = create<GameState>((set) => ({
       itemBar: state.itemBar.map((v, i) => (i === slot ? itemId : v)),
     })),
   setHotbarPickerOpen: (hotbarPickerOpen) => set({ hotbarPickerOpen }),
+  setSkillCooldownReadyAt: (skillId, readyAt) =>
+    set((state) => ({ skillCooldownReadyAt: { ...state.skillCooldownReadyAt, [skillId]: readyAt } })),
   setToken: (token) => set({ token }),
   setCharacter: (character) => set({ character }),
   setEnemies: (enemies) =>
@@ -329,7 +370,8 @@ export const useGameStore = create<GameState>((set) => ({
       return { worldPopups: next };
     }),
   removeWorldPopup: (id) => set((state) => ({ worldPopups: state.worldPopups.filter((p) => p.id !== id) })),
-  triggerAttackAnim: () => set((state) => ({ attackAnimSeq: state.attackAnimSeq + 1 })),
+  triggerAttackAnim: () => set((state) => ({ attackAnimSeq: state.attackAnimSeq + 1, attackAnimStartedAt: Date.now() })),
+  setAttackAnimSkillId: (attackAnimSkillId) => set({ attackAnimSkillId }),
   triggerSlashFx: (x, z, yaw, durationMs) =>
     set((state) => ({
       slashFx: { seq: (state.slashFx?.seq ?? 0) + 1, x, z, yaw, ...(typeof durationMs === 'number' ? { durationMs } : {}) },
@@ -337,12 +379,13 @@ export const useGameStore = create<GameState>((set) => ({
   clearSlashFx: () => set({ slashFx: null }),
   setSlashAcceptedSwingId: (slashAcceptedSwingId) => set({ slashAcceptedSwingId }),
   spawnFireboltFx: (fx) =>
-    set((state) => ({
-      fireboltFx: [
-        ...state.fireboltFx,
-        { seq: Date.now() + Math.floor(Math.random() * 1000), startMs: Date.now(), ...fx },
-      ],
-    })),
+    set((state) => {
+      const seq = fx.seq ?? Date.now() + Math.floor(Math.random() * 1000);
+      const { seq: _s, ...rest } = fx;
+      return {
+        fireboltFx: [...state.fireboltFx, { seq, startMs: Date.now(), ...rest }],
+      };
+    }),
   removeFireboltFx: (seq) =>
     set((state) => ({ fireboltFx: state.fireboltFx.filter((it) => it.seq !== seq) })),
   spawnBlizzardFx: (fx) =>
@@ -373,8 +416,29 @@ export const useGameStore = create<GameState>((set) => ({
     }),
   removeMeteorFx: (seq) =>
     set((state) => ({ meteorFx: state.meteorFx.filter((it) => it.seq !== seq) })),
+  spawnChainLightningFx: (fx) =>
+    set((state) => {
+      const seq = fx.seq ?? Date.now() + Math.floor(Math.random() * 1000);
+      const { seq: _s, ...rest } = fx;
+      return {
+        chainLightningFx: [...state.chainLightningFx, { seq, startMs: Date.now(), ...rest }],
+      };
+    }),
+  removeChainLightningFx: (seq) =>
+    set((state) => ({ chainLightningFx: state.chainLightningFx.filter((it) => it.seq !== seq) })),
+  spawnSplitArrowFx: (fx) =>
+    set((state) => {
+      const seq = fx.seq ?? Date.now() + Math.floor(Math.random() * 1000);
+      const { seq: _s, ...rest } = fx;
+      return {
+        splitArrowFx: [...state.splitArrowFx, { seq, startMs: Date.now(), ...rest }],
+      };
+    }),
+  removeSplitArrowFx: (seq) =>
+    set((state) => ({ splitArrowFx: state.splitArrowFx.filter((it) => it.seq !== seq) })),
   setCursorWorldXZ: (cursorWorldXZ) => set({ cursorWorldXZ }),
   setPlayerDebuffs: (playerDebuffs) => set({ playerDebuffs }),
+  setPlayerBuffs: (playerBuffs) => set({ playerBuffs }),
   setPlayerFacingYaw: (playerFacingYaw) => set({ playerFacingYaw }),
   moveBy: (dx, dz) =>
     set((state) => {

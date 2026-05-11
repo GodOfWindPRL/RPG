@@ -8,6 +8,7 @@ import devilWalkUrl from '../assets/model/Devil Walk Forward.fbx?url';
 import idleAnimUrl from '../assets/model/Idle.fbx?url';
 import slashAnimUrl from '../assets/model/Slash.fbx?url';
 import deathAnimUrl from '../assets/model/Death.fbx?url';
+import savageAnimUrl from '../assets/model/3HitsCombo.fbx?url';
 
 type PlayerMeshProps = {
   x: number;
@@ -41,13 +42,16 @@ export function PlayerMesh({ x, y = 0, z, isDead = false }: PlayerMeshProps) {
   const skeletonRef = useRef<THREE.Skeleton | null>(null);
 
   const attackAnimSeq = useGameStore((s) => s.attackAnimSeq);
+  const attackAnimSkillId = useGameStore((s) => s.attackAnimSkillId);
   const playerFacingYaw = useGameStore((s) => s.playerFacingYaw);
   const attackSpeed = useGameStore((s) => s.character?.attackSpeed ?? 100);
+  const haste = useGameStore((s) => s.playerBuffs);
 
   const walkFbx = useFBX(devilWalkUrl);
   const idleFbx = useFBX(idleAnimUrl);
   const slashFbx = useFBX(slashAnimUrl);
   const deathFbx = useFBX(deathAnimUrl);
+  const savageFbx = useFBX(savageAnimUrl);
 
   const model = useMemo(() => {
     const cloned = skeletonClone(walkFbx) as THREE.Group;
@@ -84,16 +88,18 @@ export function PlayerMesh({ x, y = 0, z, isDead = false }: PlayerMeshProps) {
     if (idleFbx.animations?.[0]) clips.push(THREE.AnimationClip.findByName([idleFbx.animations[0]], idleFbx.animations[0].name)?.clone() ?? idleFbx.animations[0].clone());
     if (walkFbx.animations?.[0]) clips.push(THREE.AnimationClip.findByName([walkFbx.animations[0]], walkFbx.animations[0].name)?.clone() ?? walkFbx.animations[0].clone());
     if (slashFbx.animations?.[0]) clips.push(THREE.AnimationClip.findByName([slashFbx.animations[0]], slashFbx.animations[0].name)?.clone() ?? slashFbx.animations[0].clone());
+    if (savageFbx.animations?.[0]) clips.push(THREE.AnimationClip.findByName([savageFbx.animations[0]], savageFbx.animations[0].name)?.clone() ?? savageFbx.animations[0].clone());
     if (deathFbx.animations?.[0])
       clips.push(THREE.AnimationClip.findByName([deathFbx.animations[0]], deathFbx.animations[0].name)?.clone() ?? deathFbx.animations[0].clone());
 
     if (clips[0]) clips[0].name = 'Idle';
     if (clips[1]) clips[1].name = 'Walk';
     if (clips[2]) clips[2].name = 'Attack';
-    if (clips[3]) clips[3].name = 'Death';
+    if (clips[3]) clips[3].name = 'Savage';
+    if (clips[4]) clips[4].name = 'Death';
 
     return { scene: cloned, meshCount, clips };
-  }, [walkFbx, idleFbx, slashFbx, deathFbx]);
+  }, [walkFbx, idleFbx, slashFbx, savageFbx, deathFbx]);
 
   const { actions } = useAnimations(model.clips, animRootRef);
   const showModel = model.meshCount > 0;
@@ -144,26 +150,32 @@ export function PlayerMesh({ x, y = 0, z, isDead = false }: PlayerMeshProps) {
   }, [isDead, showModel, actions]);
 
   useEffect(() => {
-    if (!showModel || !actions.Attack || isDead) return;
-    const now = performance.now();
-    const atk = actions.Attack;
+    if (!showModel || isDead) return;
+    const nowPerf = performance.now();
+    const atk = attackAnimSkillId === 'savage' ? actions.Savage : actions.Attack;
+    if (!atk) return;
     atk.reset();
     atk.setLoop(THREE.LoopOnce, 1);
     atk.clampWhenFinished = true;
     // Sync animation length to gameplay attack period:
+    const nowMs = Date.now();
+    const hastePct = haste && (haste.hasteUntil ?? 0) > nowMs ? (haste.hastePct ?? 0) : 0;
+    const effAtkSpeed = Math.round(Math.max(1, attackSpeed) * (1 + hastePct / 100));
     // attackSpeed=100 => 1 hit/sec => 1s animation.
-    const periodMsRaw = Math.round((1000 * 100) / Math.max(1, attackSpeed));
+    const periodMsRaw = Math.round((1000 * 100) / Math.max(1, effAtkSpeed));
     const periodMs = Math.max(MIN_ATTACK_PERIOD_MS, Math.min(MAX_ATTACK_PERIOD_MS, periodMsRaw));
-    attackUntilRef.current = now + periodMs;
+    attackUntilRef.current = nowPerf + periodMs;
     const clipDur = atk.getClip()?.duration ?? 0.45;
     const desiredSec = periodMs / 1000;
     const timeScale = desiredSec > 0.001 ? clipDur / desiredSec : 1;
     atk.setEffectiveTimeScale(timeScale);
     atk.fadeIn(0.06).play();
+    if (attackAnimSkillId === 'savage') actions.Attack?.fadeOut(0.06);
+    else actions.Savage?.fadeOut(0.06);
     if (actions.Idle) actions.Idle.fadeOut(0.06);
     if (actions.Walk) actions.Walk.fadeOut(0.06);
     currentStateRef.current = 'attack';
-  }, [attackAnimSeq, actions, showModel, isDead, attackSpeed]);
+  }, [attackAnimSeq, attackAnimSkillId, actions, showModel, isDead, attackSpeed, haste]);
 
   useEffect(() => {
     const dx = x - prevPosRef.current.x;
@@ -205,11 +217,13 @@ export function PlayerMesh({ x, y = 0, z, isDead = false }: PlayerMeshProps) {
       actions.Walk.reset().fadeIn(0.15).play();
       actions.Idle?.fadeOut(0.12);
       actions.Attack?.fadeOut(0.08);
+      actions.Savage?.fadeOut(0.08);
       currentStateRef.current = 'walk';
     } else if (want === 'idle' && actions.Idle) {
       actions.Idle.reset().fadeIn(0.15).play();
       actions.Walk?.fadeOut(0.12);
       actions.Attack?.fadeOut(0.08);
+      actions.Savage?.fadeOut(0.08);
       currentStateRef.current = 'idle';
     }
   });

@@ -79,6 +79,7 @@ export function ChaosOrbFx({
       }
       const ep = Math.min(1, dt / EXPLOSION_MS);
       g.visible = ep < 1;
+      // Spec: VFX is intentionally smaller (server hitbox can be larger).
       const sRing = 0.26 + radius * 0.88 * Math.pow(ep, 0.7);
       // ring uses group's XZ scale; ball uses its own scalar
       g.scale.set(sRing, 1, sRing);

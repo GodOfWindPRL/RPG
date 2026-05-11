@@ -25,6 +25,7 @@ export function useSocketSync() {
   const removeGroundLoot = useGameStore((s) => s.removeGroundLoot);
   const setEquipmentLayout = useGameStore((s) => s.setEquipmentLayout);
   const equipmentLayout = useGameStore((s) => s.equipmentLayout);
+  const setPlayerBuffs = useGameStore((s) => s.setPlayerBuffs);
 
   useEffect(() => {
     if (!token || !characterId) return;
@@ -189,6 +190,33 @@ export function useSocketSync() {
       },
     );
     socket.on(
+      'skill:fxFirebolt',
+      (p: {
+        seq: string;
+        fromX: number;
+        fromZ: number;
+        toX: number;
+        toZ: number;
+        travelMs: number;
+        radius: number;
+        mana?: number;
+      }) => {
+        if (typeof p.mana === 'number') {
+          const ch = useGameStore.getState().character;
+          if (ch) setManaHp(ch.hp, p.mana);
+        }
+        useGameStore.getState().spawnFireboltFx({
+          seq: p.seq,
+          fromX: p.fromX,
+          fromZ: p.fromZ,
+          toX: p.toX,
+          toZ: p.toZ,
+          travelMs: p.travelMs,
+          radius: p.radius,
+        });
+      },
+    );
+    socket.on(
       'skill:fxMeteor',
       (p: {
         seq: string;
@@ -214,6 +242,42 @@ export function useSocketSync() {
           fallMs: p.fallMs,
           burnHalf: p.burnHalf,
           burnDurationMs: p.burnDurationMs,
+        });
+      },
+    );
+    socket.on(
+      'skill:fxChainLightning',
+      (p: {
+        seq: string;
+        segments: { fromX: number; fromZ: number; toX: number; toZ: number }[];
+        segmentMs: number;
+        mana?: number;
+      }) => {
+        if (typeof p.mana === 'number') {
+          const ch = useGameStore.getState().character;
+          if (ch) setManaHp(ch.hp, p.mana);
+        }
+        useGameStore.getState().spawnChainLightningFx({
+          seq: p.seq,
+          segments: Array.isArray(p.segments) ? p.segments : [],
+          segmentMs: typeof p.segmentMs === 'number' ? p.segmentMs : 95,
+        });
+      },
+    );
+    socket.on(
+      'skill:fxSplitArrow',
+      (p: {
+        seq: string;
+        arrows: { fromX: number; fromZ: number; toX: number; toZ: number; travelMs: number }[];
+        mana?: number;
+      }) => {
+        if (typeof p.mana === 'number') {
+          const ch = useGameStore.getState().character;
+          if (ch) setManaHp(ch.hp, p.mana);
+        }
+        useGameStore.getState().spawnSplitArrowFx({
+          seq: p.seq,
+          arrows: Array.isArray(p.arrows) ? p.arrows : [],
         });
       },
     );
@@ -330,6 +394,18 @@ export function useSocketSync() {
       setManaHp(payload.hp, payload.mana, payload.maxHp, payload.maxMana);
     });
 
+    socket.on('player:blinked', (payload: { posX: number; posY: number; posZ: number }) => {
+      patchCharacter(payload);
+      // Teleport must cancel prior click-to-move / auto-walk / held cast (handled in App.tsx).
+      window.dispatchEvent(new CustomEvent('rpg:cancelMoveIntent'));
+    });
+
+    socket.on('player:buffs', (payload: { haste?: { until: number; pct: number } }) => {
+      const haste = payload?.haste;
+      if (!haste) return;
+      setPlayerBuffs({ hasteUntil: haste.until, hastePct: haste.pct });
+    });
+
     return () => {
       socket.disconnect();
       socketRef.current = null;
@@ -349,6 +425,7 @@ export function useSocketSync() {
     removeGroundLoot,
     equipmentLayout,
     setEquipmentLayout,
+    setPlayerBuffs,
   ]);
 
   return socketRef;

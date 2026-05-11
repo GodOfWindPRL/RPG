@@ -35,6 +35,14 @@ enum SkillElement {
   POISON
 }
 
+enum SkillCastKind {
+  MELEE
+  RANGED
+  AREA
+  TELEPORT
+  BUFF
+}
+
 model User {
   id           String      @id @default(cuid())
   email        String      @unique
@@ -77,6 +85,7 @@ model SkillDefinition {
   description    String
   requiredLevel  Int              @default(1)
   requiredSkill  String?
+  castKind       SkillCastKind    @default(MELEE)
   baseDamage     Int              @default(0)
   manaCost       Int              @default(0)
   cooldownMs     Int              @default(1000)

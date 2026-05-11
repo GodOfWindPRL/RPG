@@ -27,7 +27,7 @@ const BLIZZARD_CAST_RANGE = SKILL_RANGE * 2;
 const CHASE_INTERVAL_MS = 80;
 const SWING_HIT_AT_PCT = 0.5;
 /** Must match backend FIREBOLT_RADIUS in world.gateway.ts. */
-const FIREBOLT_RADIUS_M = 2.5;
+const FIREBOLT_RADIUS_M = 2.5 * 1.5;
 /** Match backend PROJECTILE_SPEED so VFX impact lines up with damage tick. */
 const FIREBOLT_PROJECTILE_SPEED = 14;
 /** Match backend BLIZZARD_HALF / DURATION_MS. */
@@ -39,12 +39,45 @@ const FREE_AIM_HALF_M = 15;
 /** How far Firebolt flies when no target selected. */
 const FIREBOLT_FREE_AIM_RANGE_M = 14;
 
+/** Move toward this XZ until dist(player, aim) <= castRange — stop at cast edge, not on top of the aim point (enemy/cursor). */
+function moveStandpointForCastRange(
+  px: number,
+  pz: number,
+  ax: number,
+  az: number,
+  castRange: number,
+  innerMargin = 0.28,
+): { x: number; z: number } | null {
+  const dx = ax - px;
+  const dz = az - pz;
+  const d = Math.hypot(dx, dz);
+  if (d <= castRange - innerMargin) return null;
+  if (d < 1e-5) return { x: px, z: pz };
+  const ux = dx / d;
+  const uz = dz / d;
+  const back = castRange - innerMargin;
+  return { x: ax - ux * back, z: az - uz * back };
+}
+
+/**
+ * Ground / target AOE only: max distance from player to aim (Blizzard, Meteor).
+ * Ranged projectiles (Firebolt, Chaos Orb, Split Arrow, Chain Lightning) intentionally have NO cast-range limit —
+ * only max travel of the missile on the server; player may cast from any distance.
+ */
+function skillAreaCastProximityRange(skillId: string): number | null {
+  if (skillId === 'blizzard' || skillId === 'meteor') return BLIZZARD_CAST_RANGE;
+  return null;
+}
+
 type SkillKind = 'melee' | 'ranged' | 'area';
 function skillKind(skillId: string): SkillKind {
   if (skillId === 'slash') return 'melee';
+  if (skillId === 'savage') return 'melee';
   if (skillId === 'firebolt') return 'ranged';
   if (skillId === 'blizzard') return 'area';
   if (skillId === 'chaosorb') return 'ranged';
+  if (skillId === 'chainlightning') return 'ranged';
+  if (skillId === 'splitarrow') return 'ranged';
   /** Ground-target AOE: auto-run into cast range then cast (same UX as Blizzard). */
   if (skillId === 'meteor') return 'area';
   // default: treat as ranged to avoid auto-chasing unexpectedly
@@ -84,9 +117,9 @@ export default function App() {
   const setSelectedEnemyId = useGameStore((s) => s.setSelectedEnemyId);
   const moveBy = useGameStore((s) => s.moveBy);
   const triggerAttackAnim = useGameStore((s) => s.triggerAttackAnim);
+  const setAttackAnimSkillId = useGameStore((s) => s.setAttackAnimSkillId);
   const triggerSlashFx = useGameStore((s) => s.triggerSlashFx);
   const setSlashAcceptedSwingId = useGameStore((s) => s.setSlashAcceptedSwingId);
-  const spawnFireboltFx = useGameStore((s) => s.spawnFireboltFx);
   const spawnBlizzardFx = useGameStore((s) => s.spawnBlizzardFx);
   const setPlayerFacingYaw = useGameStore((s) => s.setPlayerFacingYaw);
   const socketRef = useSocketSync();
@@ -100,6 +133,13 @@ export default function App() {
   const moveToRef = useRef<{ x: number; z: number } | null>(null);
   const kickMoveLoopRef = useRef<() => void>(() => {});
   const lmbHeldRef = useRef(false);
+  const heldCastRef = useRef<{
+    active: boolean;
+    slot: 0 | 1 | 2;
+    aim: { x: number; z: number };
+    enemyId?: string;
+  } | null>(null);
+  const heldCastRafRef = useRef(0);
   const pendingLootPickupRef = useRef<null | { lootId: string; x: number; z: number }>(null);
   const pendingCastRef = useRef<
     | null
@@ -115,7 +155,11 @@ export default function App() {
 
   const attackPeriodMs = useCallback(() => {
     const ch = useGameStore.getState().character;
-    const atkSpeed = Math.max(1, ch?.attackSpeed ?? 100); // 100 = 1 hit/sec
+    const buffs = useGameStore.getState().playerBuffs;
+    const now = Date.now();
+    const hastePct = buffs && (buffs.hasteUntil ?? 0) > now ? (buffs.hastePct ?? 0) : 0;
+    const baseAtkSpeed = Math.max(1, ch?.attackSpeed ?? 100); // 100 = 1 hit/sec
+    const atkSpeed = Math.round(baseAtkSpeed * (1 + hastePct / 100));
     const ms = Math.round((1000 * 100) / atkSpeed);
     // Spec: no cooldown & attackSpeed=100% ⇒ period exactly follows attackSpeed (100 => 1s, 200 => 0.5s).
     return Math.max(60, ms);
@@ -132,6 +176,29 @@ export default function App() {
   useEffect(() => {
     if (modal) stopChase();
   }, [modal, stopChase]);
+
+  // After Blink (server `player:blinked`): drop any queued move / chase / hold-cast so the hero stays put.
+  useEffect(() => {
+    const onCancelMoveIntent = () => {
+      moveToRef.current = null;
+      pendingCastRef.current = null;
+      pendingLootPickupRef.current = null;
+      lmbHeldRef.current = false;
+      heldCastRef.current = null;
+      if (heldCastRafRef.current) {
+        cancelAnimationFrame(heldCastRafRef.current);
+        heldCastRafRef.current = 0;
+      }
+      if (moveLoopRafRef.current) {
+        cancelAnimationFrame(moveLoopRafRef.current);
+        moveLoopRafRef.current = 0;
+      }
+      lastMoveLoopTickRef.current = 0;
+      stopChase();
+    };
+    window.addEventListener('rpg:cancelMoveIntent', onCancelMoveIntent);
+    return () => window.removeEventListener('rpg:cancelMoveIntent', onCancelMoveIntent);
+  }, [stopChase]);
 
   useEffect(() => {
     if (!character) {
@@ -263,6 +330,17 @@ export default function App() {
       }
       const target = resolveSelectedTarget();
       const sock = socketRef.current;
+
+      // Area AOE + locked enemy + still too far to place storm on target: wait for pending walk (not for ranged projectiles).
+      const areaProx = skillAreaCastProximityRange(skillId);
+      if (target && sock && areaProx != null) {
+        const t0 = useGameStore.getState().enemies.find((e) => e.id === target.id && e.hp > 0);
+        if (t0) {
+          const dist0 = Math.hypot(cur.posX - t0.x, cur.posZ - t0.z);
+          if (dist0 > areaProx) return;
+        }
+      }
+
       // Allow swinging even without a target or socket (local-only animation/VFX).
 
       // Always start the swing immediately.
@@ -271,6 +349,7 @@ export default function App() {
       const gateMs = Math.max(period, cdMs);
       nextActionAtRef.current = Date.now() + gateMs;
       skillReadyAtRef.current[skillId] = Date.now() + gateMs;
+      useGameStore.getState().setSkillCooldownReadyAt(skillId, skillReadyAtRef.current[skillId]!);
       if (skillId === 'slash') {
         const yaw = useGameStore.getState().playerFacingYaw;
         triggerSlashFx(cur.posX, cur.posZ, yaw, period);
@@ -282,6 +361,7 @@ export default function App() {
           }
         }
       }
+      setAttackAnimSkillId(skillId);
       triggerAttackAnim();
 
       if (!sock) return;
@@ -298,29 +378,34 @@ export default function App() {
           const yaw = cursor ? Math.atan2(cursor.x - caster.posX, cursor.z - caster.posZ) : useGameStore.getState().playerFacingYaw;
           if (cursor) setPlayerFacingYaw(yaw);
           const maxRange = FIREBOLT_FREE_AIM_RANGE_M;
-          const dist = cursor ? Math.hypot(cursor.x - caster.posX, cursor.z - caster.posZ) : maxRange;
-          const useRange = Math.max(0.5, Math.min(maxRange, dist));
-          const toX = caster.posX + Math.sin(yaw) * useRange;
-          const toZ = caster.posZ + Math.cos(yaw) * useRange;
-          const travelMs = Math.max(120, Math.min(900, Math.round((useRange / FIREBOLT_PROJECTILE_SPEED) * 1000)));
-          spawnFireboltFx({
-            fromX: caster.posX,
-            fromZ: caster.posZ,
-            toX,
-            toZ,
-            travelMs,
-            radius: FIREBOLT_RADIUS_M,
-          });
+          // Ranged projectile: always fly full range; click only chooses yaw.
+          const toX = caster.posX + Math.sin(yaw) * maxRange;
+          const toZ = caster.posZ + Math.cos(yaw) * maxRange;
           sock.emit('skill:cast', { skillId, x: toX, z: toZ });
+        } else if (skillId === 'blink') {
+          const cursor = useGameStore.getState().cursorWorldXZ;
+          if (!cursor) return;
+          sock.emit('skill:cast', { skillId, x: cursor.x, z: cursor.z });
+        } else if (skillId === 'haste') {
+          sock.emit('skill:cast', { skillId, x: caster.posX, z: caster.posZ });
         } else if (skillId === 'chaosorb') {
           const cursor = useGameStore.getState().cursorWorldXZ;
           const yaw = cursor ? Math.atan2(cursor.x - caster.posX, cursor.z - caster.posZ) : useGameStore.getState().playerFacingYaw;
           if (cursor) setPlayerFacingYaw(yaw);
           const maxRange = FIREBOLT_FREE_AIM_RANGE_M;
-          const dist = cursor ? Math.hypot(cursor.x - caster.posX, cursor.z - caster.posZ) : maxRange;
-          const useRange = Math.max(0.5, Math.min(maxRange, dist));
-          const toX = caster.posX + Math.sin(yaw) * useRange;
-          const toZ = caster.posZ + Math.cos(yaw) * useRange;
+          // Ranged projectile: always fly full range; click only chooses yaw.
+          const toX = caster.posX + Math.sin(yaw) * maxRange;
+          const toZ = caster.posZ + Math.cos(yaw) * maxRange;
+          sock.emit('skill:cast', { skillId, x: toX, z: toZ });
+        } else if (skillId === 'splitarrow') {
+          const cursor = useGameStore.getState().cursorWorldXZ;
+          // Split Arrow: forward fan from facing direction; use cursor for direction when available.
+          const yaw = cursor ? Math.atan2(cursor.x - caster.posX, cursor.z - caster.posZ) : useGameStore.getState().playerFacingYaw;
+          // Must match backend Split Arrow `range`.
+          const maxRange = 36;
+          // Spec: regardless of click distance, arrows always fly to max range (click is only direction).
+          const toX = caster.posX + Math.sin(yaw) * maxRange;
+          const toZ = caster.posZ + Math.cos(yaw) * maxRange;
           sock.emit('skill:cast', { skillId, x: toX, z: toZ });
         } else if (skillId === 'blizzard') {
           const cursor = useGameStore.getState().cursorWorldXZ;
@@ -340,6 +425,19 @@ export default function App() {
           if (!cursor) return;
           if (Math.abs(cursor.x - caster.posX) > FREE_AIM_HALF_M || Math.abs(cursor.z - caster.posZ) > FREE_AIM_HALF_M) return;
           sock.emit('skill:cast', { skillId, x: cursor.x, z: cursor.z });
+        } else if (skillId === 'chainlightning') {
+          const cursor = useGameStore.getState().cursorWorldXZ;
+          if (!cursor) return;
+          if (Math.abs(cursor.x - caster.posX) > FREE_AIM_HALF_M || Math.abs(cursor.z - caster.posZ) > FREE_AIM_HALF_M) return;
+          sock.emit('skill:cast', { skillId, x: cursor.x, z: cursor.z });
+        } else if (skillId === 'savage') {
+          const cursor = useGameStore.getState().cursorWorldXZ;
+          const yaw = cursor ? Math.atan2(cursor.x - caster.posX, cursor.z - caster.posZ) : useGameStore.getState().playerFacingYaw;
+          if (cursor) setPlayerFacingYaw(yaw);
+          const aimDist = 2.5;
+          const toX = caster.posX + Math.sin(yaw) * aimDist;
+          const toZ = caster.posZ + Math.cos(yaw) * aimDist;
+          sock.emit('skill:cast', { skillId, x: toX, z: toZ });
         } else {
           // Other skills still require a target for now.
           return;
@@ -358,12 +456,9 @@ export default function App() {
         }
         const dist = Math.hypot(c.posX - t.x, c.posZ - t.z);
         const k = skillKind(skillId);
+        const areaProx = skillAreaCastProximityRange(skillId);
         const range =
-          k === 'melee'
-            ? MELEE_RANGE
-            : skillId === 'blizzard' || skillId === 'meteor'
-              ? BLIZZARD_CAST_RANGE
-              : SKILL_RANGE;
+          k === 'melee' ? MELEE_RANGE : areaProx != null ? areaProx : Number.POSITIVE_INFINITY;
         if (k !== 'melee') {
           // Ranged/Area: don't auto-chase; only fire if already in range.
           // (LMB click-to-move is now responsible for repositioning.)
@@ -372,27 +467,19 @@ export default function App() {
         if (dist <= range) {
           const yaw = Math.atan2(t.x - c.posX, t.z - c.posZ);
           setPlayerFacingYaw(yaw);
-          if (skillId !== 'slash') {
+          if (skillId === 'slash') {
+            // Slash damage uses `skill:slashHit` after wind-up (separate listeners).
+          } else if (skillId === 'savage') {
+            // Server staggers 3 hits at 20/40/60% of attack period; cast immediately so timing matches spec.
+            sock.emit('skill:cast', { skillId, enemyId: t.id, x: t.x, z: t.z });
+          } else {
             const delayedEnemyId = t.id;
             window.setTimeout(() => {
               const alive = useGameStore.getState().enemies.some((e) => e.id === delayedEnemyId && e.hp > 0);
               if (!alive) return;
               const caster = useGameStore.getState().character;
               const eNow = useGameStore.getState().enemies.find((en) => en.id === delayedEnemyId);
-              if (skillId === 'firebolt' && caster && eNow) {
-                const dx = eNow.x - caster.posX;
-                const dz = eNow.z - caster.posZ;
-                const dist = Math.hypot(dx, dz);
-                const travelMs = Math.max(120, Math.min(900, Math.round((dist / FIREBOLT_PROJECTILE_SPEED) * 1000)));
-                spawnFireboltFx({
-                  fromX: caster.posX,
-                  fromZ: caster.posZ,
-                  toX: eNow.x,
-                  toZ: eNow.z,
-                  travelMs,
-                  radius: FIREBOLT_RADIUS_M,
-                });
-              } else if (skillId === 'blizzard' && eNow) {
+              if (skillId === 'blizzard' && eNow) {
                 spawnBlizzardFx({
                   centerX: eNow.x,
                   centerZ: eNow.z,
@@ -428,7 +515,10 @@ export default function App() {
         const dz = t.z - c.posZ;
         const len = Math.hypot(dx, dz);
         if (len < 0.001) return;
-        const chaseStep = PLAYER_MAX_MOVE_SPEED * (CHASE_INTERVAL_MS / 1000);
+        const buffs = useGameStore.getState().playerBuffs;
+        const now = Date.now();
+        const hastePct = buffs && (buffs.hasteUntil ?? 0) > now ? (buffs.hastePct ?? 0) : 0;
+        const chaseStep = PLAYER_MAX_MOVE_SPEED * (1 + hastePct / 100) * (CHASE_INTERVAL_MS / 1000);
         const step = Math.min(chaseStep, Math.max(0, len - MELEE_RANGE + 0.35));
         moveBy((dx / len) * step, (dz / len) * step);
         const next = useGameStore.getState().character;
@@ -440,10 +530,10 @@ export default function App() {
       moveBy,
       stopChase,
       triggerAttackAnim,
+      setAttackAnimSkillId,
       triggerSlashFx,
       setPlayerFacingYaw,
       attackPeriodMs,
-      spawnFireboltFx,
       spawnBlizzardFx,
       setSlashAcceptedSwingId,
     ],
@@ -539,7 +629,10 @@ export default function App() {
         lastMoveLoopTickRef.current = 0;
         return;
       }
-      const cap = PLAYER_MAX_MOVE_SPEED * dt;
+      const buffs = useGameStore.getState().playerBuffs;
+      const now = Date.now();
+      const hastePct = buffs && (buffs.hasteUntil ?? 0) > now ? (buffs.hastePct ?? 0) : 0;
+      const cap = PLAYER_MAX_MOVE_SPEED * (1 + hastePct / 100) * dt;
       const step = Math.min(cap, len);
       const nx = (dx / (len || 1)) * step;
       const nz = (dz / (len || 1)) * step;
@@ -661,6 +754,28 @@ export default function App() {
   useEffect(() => {
     if (!characterId) return;
 
+    function stopHeldCast() {
+      heldCastRef.current = null;
+      if (heldCastRafRef.current) cancelAnimationFrame(heldCastRafRef.current);
+      heldCastRafRef.current = 0;
+    }
+
+    function startHeldCast(slot: 0 | 1 | 2, aim: { x: number; z: number }, enemyId?: string) {
+      heldCastRef.current = { active: true, slot, aim, ...(enemyId ? { enemyId } : {}) };
+      if (heldCastRafRef.current) cancelAnimationFrame(heldCastRafRef.current);
+
+      const tick = () => {
+        const cur = heldCastRef.current;
+        if (!cur?.active) {
+          heldCastRafRef.current = 0;
+          return;
+        }
+        castMouseSlot(cur.slot, cur.aim, cur.enemyId);
+        heldCastRafRef.current = requestAnimationFrame(tick);
+      };
+      heldCastRafRef.current = requestAnimationFrame(tick);
+    }
+
     function castMouseSlot(slot: 0 | 1 | 2, aim: { x: number; z: number }, enemyId?: string) {
       const st = useGameStore.getState();
       if (st.hotbarPickerOpen) return;
@@ -668,8 +783,6 @@ export default function App() {
       if (!id) return;
       const idx = st.skills.findIndex((s) => s.skill.id === id);
       if (idx < 0) return;
-      // Any mouse cast cancels previous pending auto-run.
-      pendingCastRef.current = null;
       pendingLootPickupRef.current = null;
       // Update cursor aim used by free-aim firebolt / blizzard.
       st.setCursorWorldXZ({ x: aim.x, z: aim.z });
@@ -679,23 +792,63 @@ export default function App() {
       const ch = st.character;
       if (ch) st.setPlayerFacingYaw(Math.atan2(aim.x - ch.posX, aim.z - ch.posZ));
       const k = skillKind(id);
-      if (k === 'area') {
-        // If out of range, auto-run to range then cast (no premature attack animation).
-        if (ch) {
-          const dist = Math.hypot(aim.x - ch.posX, aim.z - ch.posZ);
-          const range = id === 'blizzard' || id === 'meteor' ? BLIZZARD_CAST_RANGE : SKILL_RANGE;
-          if (dist > range) {
+      const areaProx = skillAreaCastProximityRange(id);
+      // Cancel pending run-to-cast unless we're still holding the same run-to-cast intent (avoid clearing every rAF tick).
+      {
+        const prevPc = pendingCastRef.current;
+        const sameEnemy = (prevPc?.enemyId ?? '') === (enemyId ?? '');
+        const sameGroundAim =
+          !enemyId &&
+          !prevPc?.enemyId &&
+          Math.hypot((prevPc?.aim.x ?? 0) - aim.x, (prevPc?.aim.z ?? 0) - aim.z) < 0.35;
+        const standoffOrMelee = areaProx != null || k === 'melee';
+        const keepPending =
+          prevPc &&
+          prevPc.skillIndex === idx &&
+          standoffOrMelee &&
+          (enemyId ? sameEnemy : sameGroundAim);
+        if (!keepPending) pendingCastRef.current = null;
+      }
+      // Blizzard / Meteor only: walk to cast-range edge toward aim. Ranged projectiles: no distance gate.
+      if (ch && areaProx != null) {
+        const stand = moveStandpointForCastRange(ch.posX, ch.posZ, aim.x, aim.z, areaProx);
+        if (stand) {
+          pendingCastRef.current = {
+            id: `pc_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+            skillIndex: idx,
+            aim,
+            enemyId,
+            range: areaProx,
+          };
+          moveToRef.current = stand;
+          kickMoveLoopRef.current();
+          return;
+        }
+      }
+      // Melee + clicked enemy: run into melee range first, then cast (same idea as area auto-run).
+      if (k === 'melee' && enemyId && ch) {
+        const t = st.enemies.find((e) => e.id === enemyId && e.hp > 0);
+        if (t) {
+          const dist = Math.hypot(t.x - ch.posX, t.z - ch.posZ);
+          if (dist > MELEE_RANGE) {
             pendingCastRef.current = {
               id: `pc_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
               skillIndex: idx,
-              aim,
+              aim: { x: t.x, z: t.z },
               enemyId,
-              range,
+              range: MELEE_RANGE,
             };
-            moveToRef.current = aim;
+            moveToRef.current = { x: t.x, z: t.z };
             kickMoveLoopRef.current();
             return;
           }
+        }
+      }
+      {
+        const pend = pendingCastRef.current;
+        if (pend?.skillIndex === idx) {
+          pendingCastRef.current = null;
+          moveToRef.current = null;
         }
       }
       tryCastSkillIndex(idx);
@@ -713,11 +866,11 @@ export default function App() {
       if (btn === 0) {
         // LMB on enemy: target + cast left-mouse skill
         useGameStore.getState().setSelectedEnemyId(enemyId);
-        castMouseSlot(0, aim, enemyId);
+        startHeldCast(0, aim, enemyId);
       } else if (btn === 2) {
-        castMouseSlot(1, aim, enemyId);
+        startHeldCast(1, aim, enemyId);
       } else if (btn === 1) {
-        castMouseSlot(2, aim, enemyId);
+        startHeldCast(2, aim, enemyId);
       }
     }
 
@@ -733,36 +886,43 @@ export default function App() {
         pendingCastRef.current = null;
         pendingLootPickupRef.current = null;
         useGameStore.getState().setSelectedEnemyId(null);
+        stopHeldCast();
         lmbHeldRef.current = true;
         moveToRef.current = aim;
         kickMoveLoopRef.current();
       } else if (btn === 2) {
-        // RMB ground: rotate + cast right-mouse skill toward/at that point
+        // RMB ground: rotate + cast right-mouse skill toward/at that point (hold to repeat)
         stopChase();
         moveToRef.current = null;
         useGameStore.getState().setSelectedEnemyId(null);
-        castMouseSlot(1, aim);
+        startHeldCast(1, aim);
       } else if (btn === 1) {
-        // MMB ground: rotate + cast middle-mouse skill
+        // MMB ground: rotate + cast middle-mouse skill (hold to repeat)
         stopChase();
         moveToRef.current = null;
         useGameStore.getState().setSelectedEnemyId(null);
-        castMouseSlot(2, aim);
+        startHeldCast(2, aim);
       }
     }
 
     function onGroundMove(ev: Event) {
-      if (!lmbHeldRef.current) return;
       const d = (ev as CustomEvent).detail as { x?: number; z?: number };
       if (typeof d?.x !== 'number' || typeof d?.z !== 'number') return;
-      moveToRef.current = { x: d.x, z: d.z };
-      kickMoveLoopRef.current();
+      if (lmbHeldRef.current) {
+        moveToRef.current = { x: d.x, z: d.z };
+        kickMoveLoopRef.current();
+      }
+      if (heldCastRef.current?.active) {
+        heldCastRef.current.aim = { x: d.x, z: d.z };
+      }
     }
 
     function onGroundUp(ev: Event) {
       const d = (ev as CustomEvent).detail as { button?: number };
       const btn = typeof d?.button === 'number' ? d.button : 0;
       if (btn === 0) lmbHeldRef.current = false;
+      // Stop repeated casting on any mouse button release.
+      if (btn === 0 || btn === 1 || btn === 2) stopHeldCast();
     }
 
     window.addEventListener('rpg:enemyPointerDown', onEnemy as EventListener);
@@ -774,6 +934,7 @@ export default function App() {
       window.removeEventListener('rpg:groundPointerDown', onGround as EventListener);
       window.removeEventListener('rpg:groundPointerMove', onGroundMove as EventListener);
       window.removeEventListener('rpg:groundPointerUp', onGroundUp as EventListener);
+      stopHeldCast();
     };
   }, [characterId, stopChase, tryCastSkillIndex]);
 

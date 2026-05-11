@@ -83,6 +83,7 @@ input, button {
   border-radius: 10px;
   padding: 8px 12px;
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+  position: relative;
 }
 
 .player-hud-top {
@@ -142,6 +143,63 @@ input, button {
   font-size: 11px;
   line-height: 1;
   box-shadow: 0 0 10px rgba(0, 0, 0, 0.6);
+}
+
+/* Buff icons: larger and anchored on the right side of the mini HUD box. */
+.player-hud-buffs {
+  position: absolute;
+  right: -18px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  pointer-events: auto;
+}
+
+.player-hud-buff {
+  width: 28px;
+  height: 28px;
+  border-radius: 10px;
+  border: 1px solid rgba(167, 243, 208, 0.9);
+  background: rgba(2, 6, 23, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 18px;
+  line-height: 1;
+  box-shadow: 0 10px 22px rgba(0, 0, 0, 0.45);
+}
+
+.player-hud-buff-wrap {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+}
+
+.player-hud-buff-cd {
+  font-size: 11px;
+  font-weight: 800;
+  color: rgba(226, 232, 240, 0.92);
+  text-shadow: 0 2px 12px rgba(0, 0, 0, 0.8);
+  font-variant-numeric: tabular-nums;
+}
+
+.hot-slot-cooldown {
+  filter: grayscale(0.15) brightness(0.65);
+}
+
+.hot-cd {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 900;
+  font-size: 14px;
+  color: #e2e8f0;
+  text-shadow: 0 2px 12px rgba(0, 0, 0, 0.8);
 }
 
 /* Used by CharacterSheet (modal) for inline HP/MP/EXP read-out. */

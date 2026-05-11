@@ -262,6 +262,13 @@ export function EnemyMesh({
           : undefined
       }
     >
+      {/* Big invisible collider so clicking anywhere on the model targets the enemy. */}
+      {hp > 0 && (
+        <mesh position={[0, 1.15, 0]}>
+          <capsuleGeometry args={[0.85, 1.7, 6, 12]} />
+          <meshBasicMaterial transparent opacity={0.01} depthWrite={false} />
+        </mesh>
+      )}
       {isBoss && hp > 0 && (
         <group position={[0, 0.03, 0]}>
           <mesh rotation={[-Math.PI / 2, 0, 0]}>

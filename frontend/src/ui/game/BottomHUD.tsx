@@ -46,7 +46,12 @@ function persistBar(characterId: string, name: string, bar: (string | null)[]) {
 
 function skillEmoji(id: string): string {
   if (id === 'slash') return '⚔️';
+  if (id === 'blink') return '🌀';
+  if (id === 'haste') return '💨';
+  if (id === 'savage') return '🗡️';
+  if (id === 'splitarrow') return '🏹';
   if (id === 'firebolt') return '🔥';
+  if (id === 'chainlightning') return '⚡';
   if (id === 'meteor') return '☄️';
   if (id === 'blizzard') return '❄️';
   if (id === 'chaosorb') return '☣️';
@@ -80,11 +85,19 @@ export function BottomHUD({
   const setMouseSkillBarSlot = useGameStore((s) => s.setMouseSkillBarSlot);
   const setItemBarSlot = useGameStore((s) => s.setItemBarSlot);
   const setHotbarPickerOpen = useGameStore((s) => s.setHotbarPickerOpen);
+  const skillCooldownReadyAt = useGameStore((s) => s.skillCooldownReadyAt);
+  const [nowTick, setNowTick] = useState(() => Date.now());
 
   const [picker, setPicker] = useState<PickerState | null>(null);
   const popupRef = useRef<HTMLDivElement>(null);
 
   const characterId = character?.id ?? '';
+
+  // Tick to update cooldown countdown display.
+  useEffect(() => {
+    const t = window.setInterval(() => setNowTick(Date.now()), 120);
+    return () => window.clearInterval(t);
+  }, []);
 
   // Load persisted bars when character changes.
   useEffect(() => {
@@ -376,13 +389,16 @@ export function BottomHUD({
                 const id = mouseSkillBar[i];
                 const sk = id ? skillsById.get(id) ?? null : null;
                 const label = i === 0 ? 'LMB' : i === 1 ? 'RMB' : 'MMB';
+                const readyAt = id ? (skillCooldownReadyAt[id] ?? 0) : 0;
+                const cdMs = Math.max(0, readyAt - nowTick);
+                const cdSec = cdMs > 0 ? Math.ceil(cdMs / 1000) : 0;
                 return (
                   <button
                     key={`ms-${i}`}
                     type="button"
                     tabIndex={-1}
                     data-trigger={`skill-${MOUSE_SKILL_SLOT_BASE + i}`}
-                    className={`hot-slot hot-slot-skill ${sk ? '' : 'hot-slot-empty'}`}
+                    className={`hot-slot hot-slot-skill ${sk ? '' : 'hot-slot-empty'} ${cdMs > 0 ? 'hot-slot-cooldown' : ''}`}
                     onClick={(e) => {
                       e.stopPropagation();
                       handleMouseSkillSlotClick(i, sk);
@@ -399,6 +415,7 @@ export function BottomHUD({
                       <>
                         <span className="hot-icon">{skillEmoji(sk.skill.id)}</span>
                         <span className="hot-meta">Lv{sk.level}</span>
+                        {cdMs > 0 ? <span className="hot-cd">{cdSec}</span> : null}
                       </>
                     ) : (
                       <span className="hot-empty">+</span>
@@ -411,13 +428,16 @@ export function BottomHUD({
               {Array.from({ length: SKILL_BAR_SIZE }, (_, i) => {
                 const id = skillBar[i];
                 const sk = id ? skillsById.get(id) ?? null : null;
+                const readyAt = id ? (skillCooldownReadyAt[id] ?? 0) : 0;
+                const cdMs = Math.max(0, readyAt - nowTick);
+                const cdSec = cdMs > 0 ? Math.ceil(cdMs / 1000) : 0;
                 return (
                   <button
                     key={i}
                     type="button"
                     tabIndex={-1}
                     data-trigger={`skill-${i}`}
-                    className={`hot-slot hot-slot-skill ${sk ? '' : 'hot-slot-empty'}`}
+                    className={`hot-slot hot-slot-skill ${sk ? '' : 'hot-slot-empty'} ${cdMs > 0 ? 'hot-slot-cooldown' : ''}`}
                     onClick={(e) => {
                       e.stopPropagation();
                       handleSkillSlotClick(i, sk);
@@ -438,6 +458,7 @@ export function BottomHUD({
                       <>
                         <span className="hot-icon">{skillEmoji(sk.skill.id)}</span>
                         <span className="hot-meta">Lv{sk.level}</span>
+                        {cdMs > 0 ? <span className="hot-cd">{cdSec}</span> : null}
                       </>
                     ) : (
                       <span className="hot-empty">+</span>

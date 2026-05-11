@@ -12,6 +12,7 @@ export function CharacterSheet() {
   const setSkills = useGameStore((s) => s.setSkills);
   const setInventory = useGameStore((s) => s.setInventory);
   const setEquipmentLayout = useGameStore((s) => s.setEquipmentLayout);
+  const buffs = useGameStore((s) => s.playerBuffs);
   const [err, setErr] = useState<string | null>(null);
 
   if (!character || !token) return null;
@@ -53,11 +54,16 @@ export function CharacterSheet() {
   const hpPct = Math.min(100, (character.hp / maxHp) * 100);
   const manaPct = Math.min(100, (character.mana / maxMana) * 100);
 
+  const now = Date.now();
+  const hastePct = buffs && (buffs.hasteUntil ?? 0) > now ? (buffs.hastePct ?? 0) : 0;
+
   // All stats below are AUTHORITATIVE values computed by the backend in
   // `withComputedStats`. The client never re-derives these from items.
   const effAcc = character.accuracy;
-  const effAtkSpd = character.attackSpeed;
-  const effMove = PLAYER_MAX_MOVE_SPEED + (character.moveSpeedFlat ?? 0);
+  const effAtkSpd = Math.round(character.attackSpeed * (1 + hastePct / 100));
+  const effMove =
+    Math.round((PLAYER_MAX_MOVE_SPEED + (character.moveSpeedFlat ?? 0)) * (1 + hastePct / 100) * 100) /
+    100;
   const effPhys = character.corePhysDamage;
   const effMag = character.coreMagicDamage;
   const effDef = character.defense;

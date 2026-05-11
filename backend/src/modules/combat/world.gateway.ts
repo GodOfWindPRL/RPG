@@ -23,9 +23,37 @@ import {
 } from '../item/item.service.js';
 import { progressCollectQuest, progressKillQuest } from '../quest/quest.service.js';
 import { clampWorldXZ } from '../shared/worldBounds.js';
-import { computeDefense, computeEvasion, computeMaxHp, computeMaxMana, sumEquippedAffixTotals } from '../player/stats.js';
+import {
+  computeActiveSetBonusTotals,
+  computeAttackSpeed,
+  computeDefense,
+  computeEvasion,
+  computeMaxHp,
+  computeMaxMana,
+  sumEquippedAffixTotals,
+} from '../player/stats.js';
 import { applyExpGain, type CharacterProgressPayload } from '../player/leveling.service.js';
+import { getCharacterSkillLevel } from '../skill/skill.service.js';
+import { chainLightningMaxTargets } from '../content/skillScaling.js';
 import { randomUUID } from 'crypto';
+
+function splitArrowCount(level: number): number {
+  const lv = Math.max(1, Math.min(20, Math.floor(level || 1)));
+  if (lv >= 20) return 13;
+  if (lv >= 15) return 11;
+  if (lv >= 10) return 9;
+  if (lv >= 5) return 7;
+  return 5;
+}
+
+function splitArrowTotalAngleDeg(level: number): number {
+  const lv = Math.max(1, Math.min(20, Math.floor(level || 1)));
+  if (lv >= 20) return 60;
+  if (lv >= 15) return 55;
+  if (lv >= 10) return 50;
+  if (lv >= 5) return 45;
+  return 40;
+}
 
 interface PlayerSession {
   userId: string;
@@ -41,6 +69,7 @@ interface PlayerSession {
   vit: number;
   mag: number;
   cooldowns: Record<string, number>;
+  buffs?: { hasteUntil?: number; hastePct?: number };
   /** Active 3D slash sweep: one mana tick, many collision hits. */
   slashSwing?: { id: number; expiresAt: number; hitEnemyIds: Set<string> };
   nextRegenAt?: number;
@@ -994,7 +1023,10 @@ export function attachRpgSocket(httpServer: HttpServer) {
       if (aimX == null || aimZ == null) return;
 
       // Free-aim safety: only enforce when there is NO enemy target (free cast by x/z).
-      if (!enemy) {
+      // Ranged projectiles: spec says "ko giới hạn phạm vi có thể tung chiêu" — click only chooses yaw;
+      // we only limit their travel range inside their own skill logic.
+      const NO_FREE_AIM_BOX = new Set(['firebolt', 'chaosorb', 'splitarrow', 'blink', 'haste', 'savage']);
+      if (!enemy && !NO_FREE_AIM_BOX.has(skillId)) {
         const FREE_AIM_HALF = 15; // 30×30 square around player
         if (Math.abs(aimX - session.x) > FREE_AIM_HALF || Math.abs(aimZ - session.z) > FREE_AIM_HALF) return;
       }
@@ -1002,7 +1034,145 @@ export function attachRpgSocket(httpServer: HttpServer) {
       const readyAt = session.cooldowns[skillId] ?? 0;
       if (now < readyAt) return;
 
+      /** Chain Lightning: không tốn mana nếu không có quái trong 10×10 tại điểm ngắm. */
+      if (skillId === 'chainlightning') {
+        const SNAP_HALF = 5; // 10×10 square around aim
+        const anyInSnap = worldEnemies.some((e) => {
+          if (e.hp <= 0) return false;
+          return Math.abs(e.x - aimX) <= SNAP_HALF && Math.abs(e.z - aimZ) <= SNAP_HALF;
+        });
+        if (!anyInSnap) return;
+      }
+
       try {
+        // ─── Blink: teleport towards aim (clamped by max cast range) ─────────
+        if (skillId === 'blink') {
+          const learnedLv = await getCharacterSkillLevel(session.characterId, 'blink');
+          if (learnedLv <= 0) return;
+          const maxRange = 30 + (learnedLv - 1) * 2;
+          const dx = aimX - session.x;
+          const dz = aimZ - session.z;
+          const dist = Math.hypot(dx, dz) || 0.0001;
+          const useDist = Math.min(maxRange, dist);
+          const nx = session.x + (dx / dist) * useDist;
+          const nz = session.z + (dz / dist) * useDist;
+          session.x = clampWorldXZ(nx);
+          session.z = clampWorldXZ(nz);
+          session.cooldowns[skillId] = now + 3000;
+          await prisma.character.update({
+            where: { id: session.characterId },
+            data: { posX: session.x, posZ: session.z },
+          });
+          io.to(session.characterId).emit('player:blinked', { posX: session.x, posY: session.y, posZ: session.z });
+          return;
+        }
+
+        // ─── Haste: player buff (attack speed + move speed) ─────────────────
+        if (skillId === 'haste') {
+          const learnedLv = await getCharacterSkillLevel(session.characterId, 'haste');
+          if (learnedLv <= 0) return;
+          const pct = 20 + (learnedLv - 1) * 5;
+          const durationMs = (20 + (learnedLv - 1) * 5) * 1000;
+          const until = now + durationMs;
+          if (!session.buffs) session.buffs = {};
+          session.buffs.hasteUntil = Math.max(session.buffs.hasteUntil ?? 0, until);
+          session.buffs.hastePct = pct;
+          io.to(session.characterId).emit('player:buffs', {
+            haste: { until: session.buffs.hasteUntil, pct: session.buffs.hastePct },
+          });
+          return;
+        }
+
+        // ─── Savage: 3-hit combo sweep (5×3 rectangle in front) ─────────────
+        if (skillId === 'savage') {
+          const learnedLv = await getCharacterSkillLevel(session.characterId, 'savage');
+          if (learnedLv <= 0) return;
+
+          // Snapshot origin & facing at cast time so the 3 hits are consistent even if
+          // the player moves slightly (desync / chase / tick jitter).
+          const originX = session.x;
+          const originZ = session.z;
+
+          // Face towards aim/enemy; use the same yaw logic as other aimed skills.
+          const yaw = Math.atan2(aimX - originX, aimZ - originZ);
+          const fx = Math.sin(yaw);
+          const fz = Math.cos(yaw);
+          const rx = Math.cos(yaw);
+          const rz = -Math.sin(yaw);
+
+          // 5×3 "ngang" in front: width=5 (sideways), depth=3 (forward).
+          const HALF_W = 2.5;
+          const DEPTH = 3.0;
+          // Treat enemies as having a small body radius (server uses foot XZ only).
+          const ENEMY_BODY_R = 1.15;
+          // Allow a small "grace" so targets right at your feet / tiny desync don't whiff.
+          const FORWARD_GRACE_BEHIND = 0.65;
+          const FORWARD_GRACE_AHEAD = 0.65;
+
+          const { bundle, accuracy, critRatePctBonus, critDamagePctBonus } = await getSkillDamageBundleForCast(
+            session.characterId,
+            'savage',
+          );
+          const critRate = PLAYER_BASE_CRIT_RATE + (Number.isFinite(critRatePctBonus) ? critRatePctBonus / 100 : 0);
+          const critMult =
+            1 + (((PLAYER_BASE_CRIT_MULT - 1) * 100 + (Number.isFinite(critDamagePctBonus) ? critDamagePctBonus : 0)) / 100);
+
+          const hitOnce = async (hitIndex: number) => {
+            const nowHit = Date.now();
+            const targets = worldEnemies.filter((e) => {
+              if (e.hp <= 0) return false;
+              const dx = e.x - originX;
+              const dz = e.z - originZ;
+              const forward = dx * fx + dz * fz;
+              if (forward < -FORWARD_GRACE_BEHIND - ENEMY_BODY_R || forward > DEPTH + FORWARD_GRACE_AHEAD + ENEMY_BODY_R)
+                return false;
+              const side = dx * rx + dz * rz;
+              return Math.abs(side) <= HALF_W + ENEMY_BODY_R;
+            });
+            for (const enemy of targets) {
+              const { damage, missed, didCrit, byElement } = totalDamageToTarget(bundle, enemy, accuracy, {
+                critRate,
+                critMult,
+              });
+              if (!missed && byElement) applyElementalDebuffsToEnemy(enemy, byElement, bundle, nowHit);
+              enemy.hp = Math.max(0, enemy.hp - damage);
+              if (enemy.hp <= 0) markEnemyDead(enemy, nowHit);
+              io.to(session.characterId).emit('combat:resolved', {
+                enemyId: enemy.id,
+                enemyHp: enemy.hp,
+                damage,
+                didCrit: didCrit ?? false,
+                skillId: 'savage',
+                mana: session.mana,
+                missed,
+                diedAt: enemy.diedAt,
+              });
+              if (enemy.hp <= 0) void applyEnemyDefeatRewards(io, session, enemy);
+            }
+          };
+
+          // Spec: 100 attackSpeed = 1 cast/sec. Three hits at 20%, 40%, 60% of that period (not lumped at t≈0).
+          const char = await prisma.character.findUnique({
+            where: { id: session.characterId },
+            include: { inventoryItems: true },
+          });
+          const inv = (char?.inventoryItems ?? []) as Array<{ equipped?: boolean; affixJson: string }>;
+          const set = computeActiveSetBonusTotals(inv);
+          const totals = sumEquippedAffixTotals(inv);
+          const baseAtkSpd = char ? computeAttackSpeed(char) : 100;
+          let atkSpd = Math.round((baseAtkSpd + (totals.attackSpeed ?? 0)) * (1 + (set.attackSpeedPct ?? 0) / 100));
+          const hasteActive = (session.buffs?.hasteUntil ?? 0) > Date.now();
+          const hastePct = hasteActive ? Math.max(0, session.buffs?.hastePct ?? 0) : 0;
+          if (hastePct > 0) atkSpd = Math.round(atkSpd * (1 + hastePct / 100));
+          atkSpd = Math.max(10, atkSpd);
+          const periodMs = Math.max(120, Math.round((1000 * 100) / atkSpd));
+
+          setTimeout(() => void hitOnce(0), Math.round(periodMs * 0.2));
+          setTimeout(() => void hitOnce(1), Math.round(periodMs * 0.4));
+          setTimeout(() => void hitOnce(2), Math.round(periodMs * 0.6));
+          return;
+        }
+
         const {
           bundle,
           accuracy,
@@ -1027,12 +1197,103 @@ export function attachRpgSocket(httpServer: HttpServer) {
 
         const fxSeq = randomUUID();
 
+        // ─── Chain Lightning: snap 10×10 tại aim → nối 16×16, số mục tiêu theo cấp ─
+        if (skillId === 'chainlightning') {
+          const SNAP_HALF = 5; // 10×10 square around aim
+          const CHAIN_HALF = 8; // 16×16 square from last target
+          const SEGMENT_MS = 95;
+          const learnedLv = await getCharacterSkillLevel(session.characterId, 'chainlightning');
+          const maxT = chainLightningMaxTargets(learnedLv);
+          const inSnap = worldEnemies.filter((e) => {
+            if (e.hp <= 0) return false;
+            return Math.abs(e.x - aimX) <= SNAP_HALF && Math.abs(e.z - aimZ) <= SNAP_HALF;
+          });
+          if (inSnap.length === 0) {
+            session.mana += manaCost;
+            await prisma.character.update({
+              where: { id: session.characterId },
+              data: { mana: session.mana },
+            });
+            return;
+          }
+          const primary = inSnap.reduce((a, b) =>
+            Math.hypot(a.x - aimX, a.z - aimZ) <= Math.hypot(b.x - aimX, b.z - aimZ) ? a : b,
+          );
+          const ordered: EnemyNetState[] = [primary];
+          const used = new Set<string>([primary.id]);
+          while (ordered.length < maxT) {
+            const last = ordered[ordered.length - 1]!;
+            const pool = worldEnemies.filter(
+              (e) =>
+                e.hp > 0 &&
+                !used.has(e.id) &&
+                Math.abs(e.x - last.x) <= CHAIN_HALF &&
+                Math.abs(e.z - last.z) <= CHAIN_HALF,
+            );
+            if (!pool.length) break;
+            pool.sort(
+              (a, b) =>
+                Math.hypot(a.x - last.x, a.z - last.z) - Math.hypot(b.x - last.x, b.z - last.z),
+            );
+            const next = pool[0]!;
+            ordered.push(next);
+            used.add(next.id);
+          }
+          const segments: { fromX: number; fromZ: number; toX: number; toZ: number }[] = [];
+          let px = session.x;
+          let pz = session.z;
+          for (const t of ordered) {
+            segments.push({ fromX: px, fromZ: pz, toX: t.x, toZ: t.z });
+            px = t.x;
+            pz = t.z;
+          }
+          io.to(session.characterId).emit('skill:fxChainLightning', {
+            seq: fxSeq,
+            segments,
+            segmentMs: SEGMENT_MS,
+            mana: session.mana,
+          });
+          ordered.forEach((targ, i) => {
+            setTimeout(() => {
+              const nowHit = Date.now();
+              const eLive = worldEnemies.find((e) => e.id === targ.id && e.hp > 0);
+              if (!eLive) return;
+              const { damage, missed, didCrit, byElement } = totalDamageToTarget(bundle, eLive, accuracy, {
+                critRate,
+                critMult,
+                spellAlwaysHits,
+              });
+              if (!missed && byElement) applyElementalDebuffsToEnemy(eLive, byElement, bundle, nowHit);
+              eLive.hp = Math.max(0, eLive.hp - damage);
+              if (eLive.hp <= 0) markEnemyDead(eLive, nowHit);
+              io.to(session.characterId).emit('combat:resolved', {
+                enemyId: eLive.id,
+                enemyHp: eLive.hp,
+                damage,
+                didCrit: didCrit ?? false,
+                skillId,
+                mana: session.mana,
+                missed,
+                diedAt: eLive.diedAt,
+              });
+              if (eLive.hp <= 0) void applyEnemyDefeatRewards(io, session, eLive);
+            }, i * SEGMENT_MS);
+          });
+          return;
+        }
+
         // ─── Firebolt: projectile + 5×5 AOE explosion at impact ─────────────
         if (skillId === 'firebolt') {
-          const FIREBOLT_RADIUS = 2.5; // 5×5 area (radius ~2.5m)
+          // Spec: explode immediately on first enemy contact.
+          // Explosion size + hitbox: +50%.
+          const FIREBOLT_RADIUS = 2.5 * 1.5; // was 2.5 (5×5); now 7.5×7.5-ish
           const PROJECTILE_SPEED = 14; // m/s
-          const dx = aimX - session.x;
-          const dz = aimZ - session.z;
+          // Spec: ranged projectiles always fly full range; click only chooses yaw.
+          const yaw = Math.atan2(aimX - session.x, aimZ - session.z);
+          const MAX_RANGE = 14;
+          const dx = Math.sin(yaw) * MAX_RANGE;
+          const dz = Math.cos(yaw) * MAX_RANGE;
+
           const dist = Math.hypot(dx, dz) || 0.0001;
 
           // Missile collision: find first living enemy intersected along the ray.
@@ -1055,8 +1316,10 @@ export function attachRpgSocket(httpServer: HttpServer) {
             }
           }
 
-          const impactX = hitEnemy ? hitEnemy.x : aimX;
-          const impactZ = hitEnemy ? hitEnemy.z : aimZ;
+          const endX = session.x + dx;
+          const endZ = session.z + dz;
+          const impactX = hitEnemy ? hitEnemy.x : endX;
+          const impactZ = hitEnemy ? hitEnemy.z : endZ;
           const impactDist = Math.hypot(impactX - session.x, impactZ - session.z);
           const travelMs = Math.max(90, Math.min(900, Math.round((impactDist / PROJECTILE_SPEED) * 1000)));
           io.to(session.characterId).emit('skill:fxFirebolt', {
@@ -1101,16 +1364,130 @@ export function attachRpgSocket(httpServer: HttpServer) {
           return;
         }
 
+        // ─── Split Arrow: fan of physical arrows (hit first enemy per arrow) ─
+        if (skillId === 'splitarrow') {
+          const PROJECTILE_SPEED = 18; // m/s (purely for VFX timing)
+          const HIT_R = 1.25;
+
+          const learnedLv = await getCharacterSkillLevel(session.characterId, 'splitarrow');
+          const count = splitArrowCount(learnedLv);
+          const totalDeg = splitArrowTotalAngleDeg(learnedLv);
+
+          const baseDx = aimX - session.x;
+          const baseDz = aimZ - session.z;
+          const baseDist = Math.hypot(baseDx, baseDz) || 0.0001;
+          const baseYaw = Math.atan2(baseDx, baseDz);
+
+          // Spec: regardless of click distance, arrows always travel to max range.
+          // Click position is only used to choose the facing direction (yaw).
+          const range = 36;
+
+          const segs: { fromX: number; fromZ: number; toX: number; toZ: number; travelMs: number }[] = [];
+
+          const totalRad = (totalDeg * Math.PI) / 180;
+          const step = count <= 1 ? 0 : totalRad / (count - 1);
+          const start = -totalRad / 2;
+
+          for (let i = 0; i < count; i++) {
+            const yaw = baseYaw + start + step * i;
+            const dx = Math.sin(yaw);
+            const dz = Math.cos(yaw);
+            const toX = session.x + dx * range;
+            const toZ = session.z + dz * range;
+
+            // Find first living enemy intersected along this arrow ray.
+            let hitT = 1;
+            let hitEnemy: EnemyNetState | null = null;
+            let hitX = toX;
+            let hitZ = toZ;
+            for (const e of worldEnemies) {
+              if (e.hp <= 0) continue;
+              const ex = e.x - session.x;
+              const ez = e.z - session.z;
+              const dot = ex * (toX - session.x) + ez * (toZ - session.z);
+              const len2 = range * range;
+              const t = dot / len2;
+              if (t < 0 || t > hitT) continue;
+              const px = session.x + (toX - session.x) * t;
+              const pz = session.z + (toZ - session.z) * t;
+              const d = Math.hypot(e.x - px, e.z - pz);
+              if (d <= HIT_R) {
+                hitT = t;
+                hitEnemy = e;
+                // Important: stop the arrow at the actual intersection point along its ray,
+                // not at the enemy center. This prevents multiple arrows "pinning" to the same point.
+                hitX = px;
+                hitZ = pz;
+              }
+            }
+
+            const impactX = hitEnemy ? hitX : toX;
+            const impactZ = hitEnemy ? hitZ : toZ;
+            const impactDist = Math.hypot(impactX - session.x, impactZ - session.z);
+          // Keep speed consistent: do not cap too low, otherwise short-distance hits look slower than max-range arrows.
+          // With range=36 and speed=18 m/s => ~2000ms full travel.
+          const travelMs = Math.max(70, Math.min(2300, Math.round((impactDist / PROJECTILE_SPEED) * 1000)));
+            segs.push({ fromX: session.x, fromZ: session.z, toX: impactX, toZ: impactZ, travelMs });
+
+            if (hitEnemy) {
+              const hitEnemyId = hitEnemy.id;
+              setTimeout(() => {
+                const nowHit = Date.now();
+                const eLive = worldEnemies.find((en) => en.id === hitEnemyId && en.hp > 0);
+                if (!eLive) return;
+                const { damage, missed, didCrit } = totalDamageToTarget(bundle, eLive, accuracy, {
+                  critRate,
+                  critMult,
+                  spellAlwaysHits,
+                });
+                eLive.hp = Math.max(0, eLive.hp - damage);
+                if (eLive.hp <= 0) markEnemyDead(eLive, nowHit);
+                io.to(session.characterId).emit('combat:resolved', {
+                  enemyId: eLive.id,
+                  enemyHp: eLive.hp,
+                  damage,
+                  didCrit: didCrit ?? false,
+                  skillId,
+                  mana: session.mana,
+                  missed,
+                  diedAt: eLive.diedAt,
+                });
+                if (eLive.hp <= 0) void applyEnemyDefeatRewards(io, session, eLive);
+              }, travelMs);
+            }
+          }
+
+          io.to(session.characterId).emit('skill:fxSplitArrow', {
+            seq: fxSeq,
+            arrows: segs.map((s) => ({
+              fromX: s.fromX,
+              fromZ: s.fromZ,
+              toX: s.toX,
+              toZ: s.toZ,
+              travelMs: s.travelMs,
+            })),
+            mana: session.mana,
+          });
+          return;
+        }
+
         // ─── Chaos Orb: green poison orb, multi-explosions along path + at end ─
         if (skillId === 'chaosorb') {
-          const ORB_RADIUS = 2.5;
+          // Spec:
+          // - VFX explosion smaller 30%
+          // - Explosion hitbox larger 30%
+          const ORB_HIT_RADIUS = 2.5 * 1.3;
+          const ORB_VFX_RADIUS = 2.5 * 0.7;
           const PROJECTILE_SPEED = 14;
-          const dx = aimX - session.x;
-          const dz = aimZ - session.z;
+          // Spec: ranged projectiles always fly full range; click only chooses yaw.
+          const yaw = Math.atan2(aimX - session.x, aimZ - session.z);
+          const MAX_RANGE = 14;
+          const dx = Math.sin(yaw) * MAX_RANGE;
+          const dz = Math.cos(yaw) * MAX_RANGE;
           const dist = Math.hypot(dx, dz) || 0.0001;
 
           const MISSILE_HIT_R = 1.7;
-          const hits: { t: number; x: number; z: number }[] = [];
+          const hits: { t: number; x: number; z: number; enemyId: string }[] = [];
           for (const e of worldEnemies) {
             if (e.hp <= 0) continue;
             const ex = e.x - session.x;
@@ -1121,28 +1498,30 @@ export function attachRpgSocket(httpServer: HttpServer) {
             const pz = session.z + dz * t;
             const d = Math.hypot(e.x - px, e.z - pz);
             if (d <= MISSILE_HIT_R) {
-              hits.push({ t, x: px, z: pz });
+              hits.push({ t, x: px, z: pz, enemyId: e.id });
             }
           }
           hits.sort((a, b) => a.t - b.t);
 
           const travelMs = Math.max(90, Math.min(900, Math.round((dist / PROJECTILE_SPEED) * 1000)));
+          const endX = session.x + dx;
+          const endZ = session.z + dz;
           io.to(session.characterId).emit('skill:fxChaosOrb', {
             seq: fxSeq,
             fromX: session.x,
             fromZ: session.z,
-            toX: aimX,
-            toZ: aimZ,
+            toX: endX,
+            toZ: endZ,
             travelMs,
-            radius: ORB_RADIUS,
+            radius: ORB_VFX_RADIUS,
             mana: session.mana,
             // Hint: where explosions are expected to happen (client can mirror visually)
-            explosions: [...hits.map((h) => ({ t: h.t, x: h.x, z: h.z })), { t: 1, x: aimX, z: aimZ }],
+            explosions: [...hits.map((h) => ({ t: h.t, x: h.x, z: h.z })), { t: 1, x: endX, z: endZ }],
           });
 
           const explodeAt = (ex: number, ez: number) => {
             const nowImpact = Date.now();
-            const targets = worldEnemies.filter((en) => en.hp > 0 && Math.hypot(en.x - ex, en.z - ez) <= ORB_RADIUS);
+            const targets = worldEnemies.filter((en) => en.hp > 0 && Math.hypot(en.x - ex, en.z - ez) <= ORB_HIT_RADIUS);
             for (const target of targets) {
               const { damage, missed, didCrit, byElement } = totalDamageToTarget(bundle, target, accuracy, {
                 critRate,
@@ -1166,12 +1545,41 @@ export function attachRpgSocket(httpServer: HttpServer) {
             }
           };
 
+          // Spec: orb-hit and explosion are two separate damage sources.
+          const directHit = (enemyId: string) => {
+            const nowHit = Date.now();
+            const eLive = worldEnemies.find((en) => en.id === enemyId && en.hp > 0);
+            if (!eLive) return;
+            const { damage, missed, didCrit, byElement } = totalDamageToTarget(bundle, eLive, accuracy, {
+              critRate,
+              critMult,
+              spellAlwaysHits,
+            });
+            if (!missed && byElement) applyElementalDebuffsToEnemy(eLive, byElement, bundle, nowHit);
+            eLive.hp = Math.max(0, eLive.hp - damage);
+            if (eLive.hp <= 0) markEnemyDead(eLive, nowHit);
+            io.to(session.characterId).emit('combat:resolved', {
+              enemyId: eLive.id,
+              enemyHp: eLive.hp,
+              damage,
+              didCrit: didCrit ?? false,
+              skillId,
+              mana: session.mana,
+              missed,
+              diedAt: eLive.diedAt,
+            });
+            if (eLive.hp <= 0) void applyEnemyDefeatRewards(io, session, eLive);
+          };
+
           // Explode at each collision, plus a final explosion at end range.
           for (const h of hits) {
             const atMs = Math.round(travelMs * h.t);
-            setTimeout(() => explodeAt(h.x, h.z), atMs);
+            setTimeout(() => {
+              directHit(h.enemyId);
+              explodeAt(h.x, h.z);
+            }, atMs);
           }
-          setTimeout(() => explodeAt(aimX, aimZ), travelMs);
+          setTimeout(() => explodeAt(endX, endZ), travelMs);
           return;
         }
 

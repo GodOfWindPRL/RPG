@@ -71,6 +71,7 @@ export interface CharacterSkill {
     cooldownMs?: number;
     damageKind?: string;
     element?: string;
+    castKind?: 'MELEE' | 'RANGED' | 'AREA' | 'TELEPORT' | 'BUFF';
     /** Server SkillDefinition; dùng UI khi chưa đủ cấp nhân vật để học. */
     requiredLevel?: number;
     requiredSkill?: string | null;
