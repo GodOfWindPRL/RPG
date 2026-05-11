@@ -1,11 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ITEM_BAR_SIZE,
+  MOUSE_SKILL_BAR_SIZE,
   SKILL_BAR_SIZE,
   useGameStore,
 } from '../../systems/gameStore';
 import { mapBackendItemToUi, type UiItem } from '../../core/items';
 import type { CharacterSkill } from '../../core/types';
+import { displaySkillManaCost } from '../../core/skillScaling';
 
 export type DockPanel = 'quests' | 'inventory' | 'character' | 'skills';
 
@@ -46,12 +48,14 @@ function skillEmoji(id: string): string {
   if (id === 'slash') return '⚔️';
   if (id === 'firebolt') return '🔥';
   if (id === 'blizzard') return '❄️';
+  if (id === 'chaosorb') return '☣️';
   if (id === 'iceshard') return '❄️';
   if (id === 'lightning') return '⚡';
   return '✨';
 }
 
 type PickerState = { kind: 'skill' | 'item'; slot: number };
+const MOUSE_SKILL_SLOT_BASE = 1000;
 
 export function BottomHUD({
   onOpenModal,
@@ -66,10 +70,13 @@ export function BottomHUD({
   const skills = useGameStore((s) => s.skills);
   const inventory = useGameStore((s) => s.inventory);
   const skillBar = useGameStore((s) => s.skillBar);
+  const mouseSkillBar = useGameStore((s) => s.mouseSkillBar);
   const itemBar = useGameStore((s) => s.itemBar);
   const setSkillBar = useGameStore((s) => s.setSkillBar);
+  const setMouseSkillBar = useGameStore((s) => s.setMouseSkillBar);
   const setItemBar = useGameStore((s) => s.setItemBar);
   const setSkillBarSlot = useGameStore((s) => s.setSkillBarSlot);
+  const setMouseSkillBarSlot = useGameStore((s) => s.setMouseSkillBarSlot);
   const setItemBarSlot = useGameStore((s) => s.setItemBarSlot);
   const setHotbarPickerOpen = useGameStore((s) => s.setHotbarPickerOpen);
 
@@ -82,14 +89,19 @@ export function BottomHUD({
   useEffect(() => {
     if (!characterId) return;
     setSkillBar(loadStoredBar(characterId, 'skill', SKILL_BAR_SIZE));
+    setMouseSkillBar(loadStoredBar(characterId, 'mouseSkill', MOUSE_SKILL_BAR_SIZE));
     setItemBar(loadStoredBar(characterId, 'item', ITEM_BAR_SIZE));
-  }, [characterId, setSkillBar, setItemBar]);
+  }, [characterId, setSkillBar, setMouseSkillBar, setItemBar]);
 
   // Persist on change.
   useEffect(() => {
     if (!characterId) return;
     persistBar(characterId, 'skill', skillBar);
   }, [characterId, skillBar]);
+  useEffect(() => {
+    if (!characterId) return;
+    persistBar(characterId, 'mouseSkill', mouseSkillBar);
+  }, [characterId, mouseSkillBar]);
   useEffect(() => {
     if (!characterId) return;
     persistBar(characterId, 'item', itemBar);
@@ -105,6 +117,13 @@ export function BottomHUD({
     const cleaned = current.map((id) => (id && valid.has(id) ? id : null));
     if (cleaned.some((v, i) => v !== current[i])) setSkillBar(cleaned);
   }, [skills, setSkillBar]);
+  useEffect(() => {
+    if (skills.length === 0) return;
+    const valid = new Set(skills.map((s) => s.skill.id));
+    const current = useGameStore.getState().mouseSkillBar;
+    const cleaned = current.map((id) => (id && valid.has(id) ? id : null));
+    if (cleaned.some((v, i) => v !== current[i])) setMouseSkillBar(cleaned);
+  }, [skills, setMouseSkillBar]);
 
   useEffect(() => {
     if (inventory.length === 0) return;
@@ -174,6 +193,11 @@ export function BottomHUD({
   function handleSkillSlotClick(i: number, sk: CharacterSkill | null) {
     if (sk) onCastSkillId(sk.skill.id);
     else togglePicker('skill', i);
+  }
+
+  function handleMouseSkillSlotClick(i: number, sk: CharacterSkill | null) {
+    if (sk) onCastSkillId(sk.skill.id);
+    else togglePicker('skill', MOUSE_SKILL_SLOT_BASE + i);
   }
 
   function handleItemSlotClick(i: number, ui: UiItem | null) {
@@ -303,7 +327,9 @@ export function BottomHUD({
                     Chưa có skill. Mở Skills (F8) để học.
                   </div>
                 ) : (
-                  assignableSkills.map((s) => (
+                  assignableSkills.map((s) => {
+                    const mp = displaySkillManaCost(s.skill.id, s.level, s.skill.damageKind, s.skill.manaCost ?? 0);
+                    return (
                     <button
                       key={s.id}
                       type="button"
@@ -311,16 +337,19 @@ export function BottomHUD({
                       className="hot-popup-item"
                       onClick={(e) => {
                         e.stopPropagation();
-                        setSkillBarSlot(picker.slot, s.skill.id);
+                        if (picker.slot >= MOUSE_SKILL_SLOT_BASE) {
+                          setMouseSkillBarSlot(picker.slot - MOUSE_SKILL_SLOT_BASE, s.skill.id);
+                        } else {
+                          setSkillBarSlot(picker.slot, s.skill.id);
+                        }
                         setPicker(null);
                       }}
-                      title={`${s.skill.name} · Lv${s.level}${
-                        s.skill.manaCost ? ` · ${s.skill.manaCost} MP` : ''
-                      }`}
+                      title={`${s.skill.name} · Lv${s.level}${mp > 0 ? ` · ${mp} MP` : ''}`}
                     >
                       <span className="hot-popup-icon">{skillEmoji(s.skill.id)}</span>
                     </button>
-                  ))
+                  );
+                  })
                 )}
                 <button
                   type="button"
@@ -328,7 +357,11 @@ export function BottomHUD({
                   className="hot-popup-item hot-popup-clear"
                   onClick={(e) => {
                     e.stopPropagation();
-                    setSkillBarSlot(picker.slot, null);
+                    if (picker.slot >= MOUSE_SKILL_SLOT_BASE) {
+                      setMouseSkillBarSlot(picker.slot - MOUSE_SKILL_SLOT_BASE, null);
+                    } else {
+                      setSkillBarSlot(picker.slot, null);
+                    }
                     setPicker(null);
                   }}
                   title="Bỏ gắn"
@@ -337,6 +370,42 @@ export function BottomHUD({
                 </button>
               </div>
             )}
+            <div className="hotbar hotbar-mouse-skills" aria-label="Mouse skills">
+              {[0, 2, 1].map((i) => {
+                const id = mouseSkillBar[i];
+                const sk = id ? skillsById.get(id) ?? null : null;
+                const label = i === 0 ? 'LMB' : i === 1 ? 'RMB' : 'MMB';
+                return (
+                  <button
+                    key={`ms-${i}`}
+                    type="button"
+                    tabIndex={-1}
+                    data-trigger={`skill-${MOUSE_SKILL_SLOT_BASE + i}`}
+                    className={`hot-slot hot-slot-skill ${sk ? '' : 'hot-slot-empty'}`}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleMouseSkillSlotClick(i, sk);
+                    }}
+                    onContextMenu={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      togglePicker('skill', MOUSE_SKILL_SLOT_BASE + i);
+                    }}
+                    title={sk ? `${label}: ${sk.skill.name} · click để dùng` : `${label}: click để gắn`}
+                  >
+                    <span className="hot-key">{label}</span>
+                    {sk ? (
+                      <>
+                        <span className="hot-icon">{skillEmoji(sk.skill.id)}</span>
+                        <span className="hot-meta">Lv{sk.level}</span>
+                      </>
+                    ) : (
+                      <span className="hot-empty">+</span>
+                    )}
+                  </button>
+                );
+              })}
+            </div>
             <div className="hotbar hotbar-skills" aria-label="Skill hotbar">
               {Array.from({ length: SKILL_BAR_SIZE }, (_, i) => {
                 const id = skillBar[i];

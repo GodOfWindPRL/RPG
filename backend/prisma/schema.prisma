@@ -24,7 +24,7 @@ enum QuestType {
 
 enum SkillDamageKind {
   PHYSIC
-  MAGIC
+  SPELL
 }
 
 enum SkillElement {

@@ -25,6 +25,7 @@ export type UiItem = {
   icon: string;
   rarity?: string;
   level?: number;
+  quantity?: number;
   /** Chỉ dùng để hiển thị / cộng Luck % từ server (drop); opt base + extra vẫn theo UI. */
   affixJson?: string;
   /** Potion-only metadata (kind + heal/restore amount). */
@@ -329,6 +330,7 @@ export function mapBackendItemToUi(it: InventoryItem): UiItem {
     icon,
     rarity: it.rarity,
     level: it.level,
+    quantity: (it as any).quantity,
     affixJson: it.affixJson,
     ...(potion ? { potion } : {}),
   };

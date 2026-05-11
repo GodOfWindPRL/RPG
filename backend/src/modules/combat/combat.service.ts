@@ -5,13 +5,14 @@ import { WORLD_MAP_HALF_SIZE } from '../shared/worldBounds.js';
 import { getCharacterSkillLevel } from '../skill/skill.service.js';
 import {
   computeAccuracy,
-  computeCoreMagicDamage,
   computeCorePhysDamage,
   computeDefense,
   computeEvasion,
   computeActiveSetBonusTotals,
+  computeEquippedCoreMagicDamage,
   type StatSource,
 } from '../player/stats.js';
+import { spellSkillFlatElementBonus, effectiveSpellManaCost } from '../content/skillScaling.js';
 
 export interface ElementalTotals {
   fire: number;
@@ -217,7 +218,7 @@ export function totalDamageToTarget(
   bundle: DamageBundle,
   enemy: EnemyState,
   attackerAccuracy: number,
-  opts?: { critRate?: number; critMult?: number },
+  opts?: { critRate?: number; critMult?: number; spellAlwaysHits?: boolean },
 ): {
   damage: number;
   missed: boolean;
@@ -232,7 +233,7 @@ export function totalDamageToTarget(
   const grossElem = grossElemFire + grossElemCold + grossElemLightning + grossElemPoison;
   if (grossPhys <= 0 && grossElem <= 0) return { damage: 0, missed: false };
 
-  if (Math.random() > hitChance(attackerAccuracy, enemy.evasion)) {
+  if (!opts?.spellAlwaysHits && Math.random() > hitChance(attackerAccuracy, enemy.evasion)) {
     return { damage: 0, missed: true };
   }
 
@@ -265,27 +266,46 @@ function buildBasicAttackBundle(c: StatSource, weaponPhys: number, weaponElem: E
   };
 }
 
+function matchingWeaponElementAmount(el: SkillElement, weaponElem: ElementalTotals): number {
+  switch (el) {
+    case SkillElement.FIRE:
+      return weaponElem.fire;
+    case SkillElement.COLD:
+      return weaponElem.cold;
+    case SkillElement.LIGHTNING:
+      return weaponElem.lightning;
+    case SkillElement.POISON:
+      return weaponElem.poison;
+    default:
+      return 0;
+  }
+}
+
 function buildSkillBundle(
   c: StatSource,
   skill: SkillDefinition,
   weaponPhys: number,
   weaponElem: ElementalTotals,
+  ctx: { inventoryItems: InventoryItem[]; skillLevel: number },
 ): DamageBundle {
-  const elem = { ...weaponElem };
   if (skill.damageKind === SkillDamageKind.PHYSIC) {
+    const elem = { ...weaponElem };
     const core = computeCorePhysDamage(c);
     return {
       physic: core + weaponPhys + skill.baseDamage,
       elemental: elem,
     };
   }
-  const coreM = computeCoreMagicDamage(c);
-  const magTotal = coreM + skill.baseDamage;
-  if (skill.element === SkillElement.NONE) {
-    return { physic: weaponPhys + magTotal, elemental: elem };
+  if (skill.damageKind === SkillDamageKind.SPELL) {
+    const coreMagic = computeEquippedCoreMagicDamage(c, ctx.inventoryItems);
+    const flat = spellSkillFlatElementBonus(skill.id, ctx.skillLevel);
+    const fromWeapon = matchingWeaponElementAmount(skill.element, weaponElem);
+    const pre = coreMagic + fromWeapon + flat;
+    const outEl = emptyElemental();
+    addElement(outEl, skill.element, pre);
+    return { physic: 0, elemental: outEl };
   }
-  addElement(elem, skill.element, magTotal);
-  return { physic: weaponPhys, elemental: elem };
+  return { physic: 0, elemental: emptyElemental() };
 }
 
 function skillAttackDamageMultiplier(skillId: string, learnedLevel: number): number {
@@ -329,7 +349,11 @@ export async function calculateSkillDamage(characterId: string, skillId: string)
   if (!character || !skill) throw new Error('Invalid combat entities');
   const learnedLevel = await getCharacterSkillLevel(characterId, skillId);
   if (learnedLevel <= 0) throw new Error('Skill not learned');
-  if (character.mana < skill.manaCost) throw new Error('Not enough mana');
+  const spellMana =
+    skill.damageKind === SkillDamageKind.SPELL ? effectiveSpellManaCost(skillId, learnedLevel) : 0;
+  const manaCost =
+    skill.damageKind === SkillDamageKind.SPELL ? Math.max(skill.manaCost, spellMana) : skill.manaCost;
+  if (character.mana < manaCost) throw new Error('Not enough mana');
 
   const set = computeActiveSetBonusTotals(character.inventoryItems as any);
   const { physic, elemental, elementalPct } = parseWeaponAffixes(character.inventoryItems);
@@ -339,7 +363,10 @@ export async function calculateSkillDamage(characterId: string, skillId: string)
     lightning: Math.round(elemental.lightning * (1 + (elementalPct.lightningPct + set.elemPct.lightning) / 100)),
     poison: Math.round(elemental.poison * (1 + (elementalPct.poisonPct + set.elemPct.poison) / 100)),
   };
-  const bundle0 = buildSkillBundle(character, skill, physic, elemScaled);
+  const bundle0 = buildSkillBundle(character, skill, physic, elemScaled, {
+    inventoryItems: character.inventoryItems,
+    skillLevel: learnedLevel,
+  });
   const mul = skillAttackDamageMultiplier(skillId, learnedLevel);
   const bundle = {
     physic: Math.round(bundle0.physic * mul * (1 + set.corePhysDamagePct / 100)),
@@ -351,14 +378,16 @@ export async function calculateSkillDamage(characterId: string, skillId: string)
     },
   };
   const acc = Math.round(computeAccuracy(character) * (1 + set.accuracyPct / 100));
+  const spellAlwaysHits = skill.damageKind === SkillDamageKind.SPELL;
   return {
     bundle,
     accuracy: acc,
-    manaCost: skill.manaCost,
+    manaCost,
     cooldownMs: skill.cooldownMs,
     skill,
     critRatePctBonus: set.critRatePct,
     critDamagePctBonus: set.critDamagePct,
+    spellAlwaysHits,
   };
 }
 
@@ -381,7 +410,10 @@ export async function getSkillDamageBundleForCast(characterId: string, skillId: 
     lightning: Math.round(elemental.lightning * (1 + (elementalPct.lightningPct + set.elemPct.lightning) / 100)),
     poison: Math.round(elemental.poison * (1 + (elementalPct.poisonPct + set.elemPct.poison) / 100)),
   };
-  const bundle0 = buildSkillBundle(character, skill, physic, elemScaled);
+  const bundle0 = buildSkillBundle(character, skill, physic, elemScaled, {
+    inventoryItems: character.inventoryItems,
+    skillLevel: learnedLevel,
+  });
   const mul = skillAttackDamageMultiplier(skillId, learnedLevel);
   const bundle = {
     physic: Math.round(bundle0.physic * mul * (1 + set.corePhysDamagePct / 100)),
@@ -393,7 +425,8 @@ export async function getSkillDamageBundleForCast(characterId: string, skillId: 
     },
   };
   const acc = Math.round(computeAccuracy(character) * (1 + set.accuracyPct / 100));
-  return { bundle, accuracy: acc, critRatePctBonus: set.critRatePct, critDamagePctBonus: set.critDamagePct };
+  const spellAlwaysHits = skill.damageKind === SkillDamageKind.SPELL;
+  return { bundle, accuracy: acc, critRatePctBonus: set.critRatePct, critDamagePctBonus: set.critDamagePct, spellAlwaysHits };
 }
 
 /** Damage quái đánh nhân vật (chỉ physic từ quái). */

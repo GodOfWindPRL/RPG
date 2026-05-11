@@ -272,13 +272,12 @@ function Slot({
   size = 'sm',
   isDragging,
   onClick,
+  onDoubleClick,
+  onContextMenu,
   onDragStart,
   onDragEnd,
   onDrop,
   onDragOver,
-  actionLabel,
-  onActionEquip,
-  onActionDelete,
   className = '',
 }: {
   label?: string;
@@ -287,13 +286,12 @@ function Slot({
   size?: SlotSize;
   isDragging: boolean;
   onClick: () => void;
+  onDoubleClick?: () => void;
+  onContextMenu?: (ev: React.MouseEvent) => void;
   onDragStart?: (ev: React.DragEvent) => void;
   onDragEnd?: (ev: React.DragEvent) => void;
   onDrop: (ev: React.DragEvent) => void;
   onDragOver: (ev: React.DragEvent) => void;
-  actionLabel?: string;
-  onActionEquip?: () => void;
-  onActionDelete?: () => void;
   className?: string;
 }) {
   const opts: OptLine[] = item ? allOptLines(item) : [];
@@ -321,6 +319,13 @@ function Slot({
         item ? rarityBorder(item.rarity) : 'border-slate-700/70'
       } ${selected ? 'rpg-slot-selected' : ''} ${className}`}
       onClick={onClick}
+      onDoubleClick={(e) => {
+        e.stopPropagation();
+        onDoubleClick?.();
+      }}
+      onContextMenu={(e) => {
+        onContextMenu?.(e);
+      }}
       draggable={Boolean(item)}
       onDragStart={onDragStart}
       onDragEnd={onDragEnd}
@@ -331,6 +336,11 @@ function Slot({
       <div className={`relative flex h-full w-full items-center justify-center ${iconSize} drop-shadow-[0_2px_6px_rgba(0,0,0,0.85)]`}>
         {item?.icon ?? ''}
       </div>
+      {item && (item.quantity ?? 1) > 1 && (
+        <div className="pointer-events-none absolute right-1 top-1 rounded-md bg-black/60 px-1.5 py-0.5 text-[10px] font-extrabold text-slate-100">
+          {item.quantity}
+        </div>
+      )}
       {!item && label && (
         <div className="pointer-events-none absolute bottom-1 right-1 text-[10px] font-bold uppercase tracking-wide text-slate-500/80 drop-shadow-[0_1px_2px_rgba(0,0,0,0.9)]">
           {label}
@@ -379,38 +389,6 @@ function Slot({
               </div>
             </div>
           )}
-          {(onActionEquip || onActionDelete) && (
-            <div className="pointer-events-auto mt-2 flex items-center justify-end gap-6 border-t border-slate-800/70 pt-2 text-[11px]">
-              {onActionEquip && (
-                <button
-                  type="button"
-                  tabIndex={-1}
-                  className="cursor-pointer font-bold text-sky-200 hover:text-sky-100"
-                  onPointerDown={(e) => e.preventDefault()}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    onActionEquip();
-                  }}
-                >
-                  {actionLabel ?? 'Equip'}
-                </button>
-              )}
-              {onActionDelete && (
-                <button
-                  type="button"
-                  tabIndex={-1}
-                  className="cursor-pointer font-bold text-rose-200 hover:text-rose-100"
-                  onPointerDown={(e) => e.preventDefault()}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    onActionDelete();
-                  }}
-                >
-                  Delete
-                </button>
-              )}
-            </div>
-          )}
         </div>
       )}
     </div>
@@ -447,6 +425,7 @@ export function InventoryPanel() {
   const [equip, setEquip] = useState<EquipmentState>(() => ({ ...EMPTY_EQUIP }));
   const [selected, setSelected] = useState<{ kind: 'inv'; r: number; c: number } | { kind: 'eq'; slot: EquipmentSlot } | null>(null);
   const [isDragging, setIsDragging] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState<null | { itemId: string; name: string }>(null);
   const lastCharacterIdRef = useRef<string | undefined>(undefined);
 
   // Persist grid layout (ids) so reopening modal does not auto-pack.
@@ -661,22 +640,27 @@ export function InventoryPanel() {
     });
   };
 
+  const requestDeleteItem = (item: UiItem) => {
+    setConfirmDelete({ itemId: item.id, name: item.name });
+  };
+
+  const confirmDeleteItem = () => {
+    const cur = confirmDelete;
+    if (!cur) return;
+    window.dispatchEvent(new CustomEvent('rpg:itemDelete', { detail: { itemId: cur.itemId } }));
+    setConfirmDelete(null);
+  };
+
   const deleteInvCell = (r: number, c: number) => {
-    setGrid((prev) => {
-      const next = prev.map((row) => row.slice());
-      const it = next[r]![c];
-      if (it?.id) window.dispatchEvent(new CustomEvent('rpg:itemDelete', { detail: { itemId: it.id } }));
-      next[r]![c] = null;
-      return next;
-    });
+    const it = grid[r]?.[c];
+    if (!it) return;
+    requestDeleteItem(it);
   };
 
   const deleteEquipSlot = (slot: EquipmentSlot) => {
-    setEquip((prev) => {
-      const it = prev[slot];
-      if (it?.id) window.dispatchEvent(new CustomEvent('rpg:itemDelete', { detail: { itemId: it.id } }));
-      return { ...prev, [slot]: null };
-    });
+    const it = equip[slot];
+    if (!it) return;
+    requestDeleteItem(it);
   };
 
   const moveFromInvToInv = (srcR: number, srcC: number, dstR: number, dstC: number) => {
@@ -811,13 +795,15 @@ export function InventoryPanel() {
         isDragging={isDragging}
         selected={selected?.kind === 'eq' && selected.slot === slot}
         onClick={() => setSelected({ kind: 'eq', slot })}
+        onContextMenu={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          if (item) requestDeleteItem(item);
+        }}
         onDragStart={item ? dragStartEq(slot, item) : undefined}
         onDragEnd={handleDragEnd}
         onDrop={handleDropOnEq(slot)}
         onDragOver={onDragOver}
-        actionLabel={actionLabel ?? 'Unequip'}
-        onActionEquip={item ? () => unequipToInventory(slot) : undefined}
-        onActionDelete={item ? () => deleteEquipSlot(slot) : undefined}
       />
     );
   };
@@ -868,12 +854,15 @@ export function InventoryPanel() {
                   onClick={() => {
                     if (item) clearPotionSlot(i);
                   }}
+                  onContextMenu={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    if (item) clearPotionSlot(i);
+                  }}
                   onDragStart={item ? dragStartPot(i, item) : undefined}
                   onDragEnd={handleDragEnd}
                   onDrop={handleDropOnPotion(i)}
                   onDragOver={onDragOver}
-                  actionLabel="Clear"
-                  onActionEquip={item ? () => clearPotionSlot(i) : undefined}
                 />
               );
             })}
@@ -910,18 +899,51 @@ export function InventoryPanel() {
                 isDragging={isDragging}
                 selected={selected?.kind === 'inv' && selected.r === r && selected.c === c}
                 onClick={() => setSelected({ kind: 'inv', r, c })}
+                onDoubleClick={() => {
+                  if (cell) equipFromInvCell(r, c);
+                }}
+                onContextMenu={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  if (cell) requestDeleteItem(cell);
+                }}
                 onDragStart={cell ? dragStartInv(r, c, cell) : undefined}
                 onDragEnd={handleDragEnd}
                 onDrop={handleDropOnInv(r, c)}
                 onDragOver={onDragOver}
-                onActionEquip={cell ? () => equipFromInvCell(r, c) : undefined}
-                onActionDelete={cell ? () => deleteInvCell(r, c) : undefined}
               />
             )),
           )}
         </div>
         <div className="inv-bag-hint">Drag potions onto F1–F4 quick slots to use ingame</div>
       </div>
+
+      {confirmDelete && (
+        <div className="fixed inset-0 z-80 flex items-center justify-center bg-black/40">
+          <div className="w-[320px] rounded-xl border border-slate-700/70 bg-slate-950/95 p-4 shadow-2xl">
+            <div className="text-sm font-extrabold text-slate-100">Delete item?</div>
+            <div className="mt-1 text-xs text-slate-300">{confirmDelete.name}</div>
+            <div className="mt-4 flex items-center justify-end gap-2">
+              <button
+                type="button"
+                className="rounded-md border border-slate-600 bg-slate-900/80 px-3 py-1 text-xs font-semibold text-slate-100 hover:bg-slate-800"
+                onPointerDown={(e) => e.preventDefault()}
+                onClick={() => setConfirmDelete(null)}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="rounded-md border border-rose-700/70 bg-rose-950/40 px-3 py-1 text-xs font-semibold text-rose-200 hover:bg-rose-900/40"
+                onPointerDown={(e) => e.preventDefault()}
+                onClick={confirmDeleteItem}
+              >
+                Delete
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

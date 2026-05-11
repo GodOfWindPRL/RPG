@@ -21,6 +21,7 @@ const EQUIP_SLOTS: EquipmentSlot[] = [
 /** Số ô bar dưới đáy: 6 skill (phím 1-6) + 4 item (F1-F4). */
 export const SKILL_BAR_SIZE = 6;
 export const ITEM_BAR_SIZE = 4;
+export const MOUSE_SKILL_BAR_SIZE = 3; // left / right / middle
 
 export type EquipmentLayout = Record<EquipmentSlot, string | null>;
 
@@ -94,6 +95,20 @@ interface GameState {
     durationMs: number;
     /** Half-width of the 5×5 area. */
     half: number;
+    /** Hit radius of each falling shard (~4×4 ô). */
+    shardRadius?: number;
+  }[];
+  /** Chaos Orb: green poison orb with multiple explosions along path. */
+  chaosOrbFx: {
+    seq: number;
+    fromX: number;
+    fromZ: number;
+    toX: number;
+    toZ: number;
+    startMs: number;
+    travelMs: number;
+    radius: number;
+    explosions: { t: number; x: number; z: number }[];
   }[];
   /** Latest mouse cursor XZ position on ground (for free-aim skills). */
   cursorWorldXZ: { x: number; z: number } | null;
@@ -101,13 +116,17 @@ interface GameState {
   playerDebuffs: { burnUntil?: number; slowUntil?: number; poisonUntil?: number; shockUntil?: number } | null;
   /** Hotbar gắn skill cho phím 1-6 (lưu skill.id). null = ô trống. */
   skillBar: (string | null)[];
+  /** Mouse skill bar: 0=Left, 1=Right, 2=Middle. Stores skill.id. */
+  mouseSkillBar: (string | null)[];
   /** Hotbar gắn item cho phím F1-F4 (lưu inventoryItem.id). null = ô trống. */
   itemBar: (string | null)[];
   /** Khi đang mở picker chọn skill/item, các phím tắt 1-6/F1-F4 nên bị tắt. */
   hotbarPickerOpen: boolean;
   setSkillBar: (bar: (string | null)[]) => void;
+  setMouseSkillBar: (bar: (string | null)[]) => void;
   setItemBar: (bar: (string | null)[]) => void;
   setSkillBarSlot: (slot: number, skillId: string | null) => void;
+  setMouseSkillBarSlot: (slot: number, skillId: string | null) => void;
   setItemBarSlot: (slot: number, itemId: string | null) => void;
   setHotbarPickerOpen: (open: boolean) => void;
   setToken: (token: string | null) => void;
@@ -148,8 +167,24 @@ interface GameState {
     radius: number;
   }) => void;
   removeFireboltFx: (seq: number) => void;
-  spawnBlizzardFx: (fx: { centerX: number; centerZ: number; durationMs: number; half: number }) => void;
+  spawnBlizzardFx: (fx: {
+    centerX: number;
+    centerZ: number;
+    durationMs: number;
+    half: number;
+    shardRadius?: number;
+  }) => void;
   removeBlizzardFx: (seq: number) => void;
+  spawnChaosOrbFx: (fx: {
+    fromX: number;
+    fromZ: number;
+    toX: number;
+    toZ: number;
+    travelMs: number;
+    radius: number;
+    explosions: { t: number; x: number; z: number }[];
+  }) => void;
+  removeChaosOrbFx: (seq: number) => void;
   setCursorWorldXZ: (pos: { x: number; z: number } | null) => void;
   setPlayerDebuffs: (debuffs: GameState['playerDebuffs']) => void;
   setPlayerFacingYaw: (yaw: number) => void;
@@ -177,14 +212,23 @@ export const useGameStore = create<GameState>((set) => ({
   slashAcceptedSwingId: null,
   fireboltFx: [],
   blizzardFx: [],
+  chaosOrbFx: [],
   cursorWorldXZ: null,
   playerDebuffs: null,
   skillBar: Array.from({ length: SKILL_BAR_SIZE }, () => null),
+  mouseSkillBar: Array.from({ length: MOUSE_SKILL_BAR_SIZE }, () => null),
   itemBar: Array.from({ length: ITEM_BAR_SIZE }, () => null),
   hotbarPickerOpen: false,
   setSkillBar: (bar) =>
     set(() => ({
       skillBar: Array.from({ length: SKILL_BAR_SIZE }, (_, i) => (typeof bar[i] === 'string' ? bar[i] : null)),
+    })),
+  setMouseSkillBar: (bar) =>
+    set(() => ({
+      mouseSkillBar: Array.from(
+        { length: MOUSE_SKILL_BAR_SIZE },
+        (_, i) => (typeof bar[i] === 'string' ? bar[i] : null),
+      ),
     })),
   setItemBar: (bar) =>
     set(() => ({
@@ -193,6 +237,10 @@ export const useGameStore = create<GameState>((set) => ({
   setSkillBarSlot: (slot, skillId) =>
     set((state) => ({
       skillBar: state.skillBar.map((v, i) => (i === slot ? skillId : v)),
+    })),
+  setMouseSkillBarSlot: (slot, skillId) =>
+    set((state) => ({
+      mouseSkillBar: state.mouseSkillBar.map((v, i) => (i === slot ? skillId : v)),
     })),
   setItemBarSlot: (slot, itemId) =>
     set((state) => ({
@@ -283,6 +331,15 @@ export const useGameStore = create<GameState>((set) => ({
     })),
   removeBlizzardFx: (seq) =>
     set((state) => ({ blizzardFx: state.blizzardFx.filter((it) => it.seq !== seq) })),
+  spawnChaosOrbFx: (fx) =>
+    set((state) => ({
+      chaosOrbFx: [
+        ...state.chaosOrbFx,
+        { seq: Date.now() + Math.floor(Math.random() * 1000), startMs: Date.now(), ...fx },
+      ],
+    })),
+  removeChaosOrbFx: (seq) =>
+    set((state) => ({ chaosOrbFx: state.chaosOrbFx.filter((it) => it.seq !== seq) })),
   setCursorWorldXZ: (cursorWorldXZ) => set({ cursorWorldXZ }),
   setPlayerDebuffs: (playerDebuffs) => set({ playerDebuffs }),
   setPlayerFacingYaw: (playerFacingYaw) => set({ playerFacingYaw }),

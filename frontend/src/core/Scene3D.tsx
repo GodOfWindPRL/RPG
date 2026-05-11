@@ -7,6 +7,7 @@ import { EnemyMesh } from '../entities/EnemyMesh';
 import { SlashArcFx } from '../entities/SlashArcFx';
 import { FireBoltFx } from '../entities/FireBoltFx';
 import { BlizzardFx } from '../entities/BlizzardFx';
+import { ChaosOrbFx } from '../entities/ChaosOrbFx';
 import { useGameStore } from '../systems/gameStore';
 import { CAMERA_BASE_OFFSET, useCameraSettingsStore } from '../systems/cameraSettingsStore';
 import { MAP_SIZE } from './world';
@@ -133,6 +134,63 @@ function MouseGroundTracker() {
   return null;
 }
 
+function GroundPointerEmitter() {
+  const { camera, gl } = useThree();
+  const raycasterRef = useRef(new THREE.Raycaster());
+  const planeRef = useRef(new THREE.Plane(new THREE.Vector3(0, 1, 0), 0)); // y=0
+  const ndcRef = useRef(new THREE.Vector2());
+  const hitRef = useRef(new THREE.Vector3());
+
+  useEffect(() => {
+    const el = gl.domElement;
+    function project(ev: PointerEvent) {
+      const rect = el.getBoundingClientRect();
+      const x = ((ev.clientX - rect.left) / rect.width) * 2 - 1;
+      const y = -(((ev.clientY - rect.top) / rect.height) * 2 - 1);
+      ndcRef.current.set(x, y);
+      const raycaster = raycasterRef.current;
+      raycaster.setFromCamera(ndcRef.current, camera as THREE.PerspectiveCamera);
+      return raycaster.ray.intersectPlane(planeRef.current, hitRef.current);
+    }
+    function onDown(ev: PointerEvent) {
+      // Ignore when click is on UI (not canvas), but still prevent browser context menu later.
+      const hit = project(ev);
+      if (!hit) return;
+      window.dispatchEvent(
+        new CustomEvent('rpg:groundPointerDown', {
+          detail: { x: hit.x, z: hit.z, button: ev.button },
+        }),
+      );
+    }
+    function onMove(ev: PointerEvent) {
+      // While holding LMB, stream move-to targets.
+      if ((ev.buttons & 1) === 0) return;
+      const hit = project(ev);
+      if (!hit) return;
+      window.dispatchEvent(new CustomEvent('rpg:groundPointerMove', { detail: { x: hit.x, z: hit.z } }));
+    }
+    function onUp(ev: PointerEvent) {
+      window.dispatchEvent(new CustomEvent('rpg:groundPointerUp', { detail: { button: ev.button } }));
+    }
+    function onContext(ev: MouseEvent) {
+      // Prevent browser context menu on canvas.
+      ev.preventDefault();
+    }
+    el.addEventListener('pointerdown', onDown);
+    el.addEventListener('pointermove', onMove);
+    el.addEventListener('pointerup', onUp);
+    el.addEventListener('contextmenu', onContext);
+    return () => {
+      el.removeEventListener('pointerdown', onDown);
+      el.removeEventListener('pointermove', onMove);
+      el.removeEventListener('pointerup', onUp);
+      el.removeEventListener('contextmenu', onContext);
+    };
+  }, [camera, gl]);
+
+  return null;
+}
+
 export function Scene3D() {
   const character = useGameStore((s) => s.character);
   const enemies = useGameStore((s) => s.enemies);
@@ -143,6 +201,7 @@ export function Scene3D() {
   const slashFx = useGameStore((s) => s.slashFx);
   const fireboltFx = useGameStore((s) => s.fireboltFx);
   const blizzardFx = useGameStore((s) => s.blizzardFx);
+  const chaosOrbFx = useGameStore((s) => s.chaosOrbFx);
   const playerFacingYaw = useGameStore((s) => s.playerFacingYaw);
   const cameraFov = useCameraSettingsStore((s) => s.fov);
   const distanceScale = useCameraSettingsStore((s) => s.distanceScale);
@@ -155,6 +214,7 @@ export function Scene3D() {
     <Canvas style={{ width: '100%', height: '100%' }} shadows="percentage" camera={{ position: camPos, fov: cameraFov }}>
       <CameraFovSync />
       <MouseGroundTracker />
+      <GroundPointerEmitter />
       <ambientLight intensity={0.55} />
       <hemisphereLight args={['#cbd5e1', '#0f172a', 0.45]} />
       <directionalLight intensity={1.1} position={[6, 14, 4]} castShadow />
@@ -196,6 +256,21 @@ export function Scene3D() {
           startMs={fx.startMs}
           durationMs={fx.durationMs}
           half={fx.half}
+          shardRadius={fx.shardRadius ?? 2}
+        />
+      ))}
+      {chaosOrbFx.map((fx) => (
+        <ChaosOrbFx
+          key={fx.seq}
+          seq={fx.seq}
+          fromX={fx.fromX}
+          fromZ={fx.fromZ}
+          toX={fx.toX}
+          toZ={fx.toZ}
+          startMs={fx.startMs}
+          travelMs={fx.travelMs}
+          radius={fx.radius}
+          explosions={fx.explosions}
         />
       ))}
       {groundLoot.map((l) => (
@@ -217,7 +292,7 @@ export function Scene3D() {
                   flexDirection: 'column',
                   alignItems: 'center',
                   gap: 2,
-                  padding: '2px 4px',
+                  padding: '10px 12px',
                   borderRadius: 8,
                   background: 'rgba(2,6,23,0.35)',
                   border: '1px solid rgba(51,65,85,0.6)',
@@ -254,6 +329,7 @@ export function Scene3D() {
         .map((enemy) => (
           <EnemyMesh
             key={enemy.id}
+            id={enemy.id}
             name={enemy.name}
             isBoss={enemy.isBoss === true}
             x={enemy.x}

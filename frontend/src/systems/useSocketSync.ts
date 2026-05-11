@@ -163,6 +163,31 @@ export function useSocketSync() {
       // Defensive dedupe: avoid accidental duplicates from reconnects / repeated events.
       setInventory([item, ...useGameStore.getState().inventory.filter((it) => it.id !== item.id)]);
     });
+
+    socket.on(
+      'skill:fxChaosOrb',
+      (p: {
+        seq: string;
+        fromX: number;
+        fromZ: number;
+        toX: number;
+        toZ: number;
+        travelMs: number;
+        radius: number;
+        explosions?: { t: number; x: number; z: number }[];
+      }) => {
+        const explosions = Array.isArray(p.explosions) ? p.explosions : [{ t: 1, x: p.toX, z: p.toZ }];
+        useGameStore.getState().spawnChaosOrbFx({
+          fromX: p.fromX,
+          fromZ: p.fromZ,
+          toX: p.toX,
+          toZ: p.toZ,
+          travelMs: p.travelMs,
+          radius: p.radius,
+          explosions,
+        });
+      },
+    );
     socket.on('inventory:full', () => {
       const ch = useGameStore.getState().character;
       if (!ch) return;
@@ -199,6 +224,7 @@ export function useSocketSync() {
       'item:used',
       (payload: {
         itemId: string;
+        remainingQuantity?: number;
         hp: number;
         mana: number;
         maxHp: number;
@@ -207,12 +233,20 @@ export function useSocketSync() {
         healedMp?: number;
       }) => {
         const { itemId } = payload;
-        // Remove the consumed potion from inventory & hotbar.
-        setInventory(useGameStore.getState().inventory.filter((it) => it.id !== itemId));
-        const itemBar = useGameStore.getState().itemBar;
-        itemBar.forEach((id, i) => {
-          if (id === itemId) useGameStore.getState().setItemBarSlot(i, null);
-        });
+        // If potion stacks, decrement quantity; otherwise remove.
+        if (typeof payload.remainingQuantity === 'number' && payload.remainingQuantity > 0) {
+          setInventory(
+            useGameStore.getState().inventory.map((it: any) =>
+              it.id === itemId ? { ...it, quantity: payload.remainingQuantity } : it,
+            ),
+          );
+        } else {
+          setInventory(useGameStore.getState().inventory.filter((it) => it.id !== itemId));
+          const itemBar = useGameStore.getState().itemBar;
+          itemBar.forEach((id, i) => {
+            if (id === itemId) useGameStore.getState().setItemBarSlot(i, null);
+          });
+        }
         // Apply HP / MP heal.
         setManaHp(payload.hp, payload.mana, payload.maxHp, payload.maxMana);
         const ch = useGameStore.getState().character;

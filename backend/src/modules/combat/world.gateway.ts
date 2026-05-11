@@ -144,7 +144,8 @@ function clampToHome(v: number, home: number) {
 
 const CORPSE_VISIBLE_MS = 3000;
 const LOOT_VISIBLE_MS = 60000;
-const LOOT_PICKUP_RANGE = 2.4;
+// Spec: allow pickup within ~8×8 square around player -> radius ≈ 4.
+const LOOT_PICKUP_RANGE = 4.0;
 const INVENTORY_CAPACITY = 60;
 
 function markEnemyDead(enemy: EnemyNetState, now: number) {
@@ -208,8 +209,14 @@ async function aiTick(io: Server) {
     const maxHp = computeMaxHp(src);
     const maxMana = computeMaxMana(src);
     const r = await getRegenFromEquipped(session.characterId);
-    const hpGain = (r.hpFlat ?? 0) + (maxHp * (r.hpPct ?? 0)) / 100;
-    const mpGain = (r.mpFlat ?? 0) + (maxMana * (r.mpPct ?? 0)) / 100;
+    // Base regen (spec):
+    // - HP: base 5, +1 per level
+    // - MP: base 2, +0.5 per level
+    const lv = Math.max(1, session.level || 1);
+    const baseHpRegen = 5 + (lv - 1) * 1;
+    const baseMpRegen = 2 + (lv - 1) * 0.5;
+    const hpGain = baseHpRegen + (r.hpFlat ?? 0) + (maxHp * (r.hpPct ?? 0)) / 100;
+    const mpGain = baseMpRegen + (r.mpFlat ?? 0) + (maxMana * (r.mpPct ?? 0)) / 100;
     const carryHp = (session.regenCarryHp ?? 0) + (Number.isFinite(hpGain) ? hpGain : 0);
     const carryMp = (session.regenCarryMp ?? 0) + (Number.isFinite(mpGain) ? mpGain : 0);
     const addHp = Math.max(0, Math.floor(carryHp));
@@ -624,17 +631,53 @@ export function attachRpgSocket(httpServer: HttpServer) {
         return;
       }
 
-      const created = await prisma.inventoryItem.create({
-        data: {
-          characterId: session.characterId,
-          definitionId: loot.roll.definitionId,
-          level: loot.roll.level,
-          rarity: loot.roll.rarity as any,
-          affixJson: loot.roll.affixJson,
-          quantity: 1,
-        },
-        include: { definition: true },
-      });
+      const def = await prisma.itemDefinition.findUnique({ where: { id: loot.roll.definitionId } });
+      const isPotion = Boolean(def?.slot?.toLowerCase().startsWith('potion_'));
+      const MAX_STACK = 100;
+      let created = null as any;
+      if (isPotion) {
+        const existing = await prisma.inventoryItem.findFirst({
+          where: {
+            characterId: session.characterId,
+            definitionId: loot.roll.definitionId,
+            equipped: false,
+            quantity: { lt: MAX_STACK },
+          },
+          orderBy: { createdAt: 'asc' },
+          include: { definition: true },
+        });
+        if (existing) {
+          created = await prisma.inventoryItem.update({
+            where: { id: existing.id },
+            data: { quantity: Math.min(MAX_STACK, (existing.quantity ?? 1) + 1) },
+            include: { definition: true },
+          });
+        } else {
+          created = await prisma.inventoryItem.create({
+            data: {
+              characterId: session.characterId,
+              definitionId: loot.roll.definitionId,
+              level: loot.roll.level,
+              rarity: loot.roll.rarity as any,
+              affixJson: loot.roll.affixJson,
+              quantity: 1,
+            },
+            include: { definition: true },
+          });
+        }
+      } else {
+        created = await prisma.inventoryItem.create({
+          data: {
+            characterId: session.characterId,
+            definitionId: loot.roll.definitionId,
+            level: loot.roll.level,
+            rarity: loot.roll.rarity as any,
+            affixJson: loot.roll.affixJson,
+            quantity: 1,
+          },
+          include: { definition: true },
+        });
+      }
 
       await progressCollectQuest(session.characterId, created.rarity);
 
@@ -686,13 +729,20 @@ export function attachRpgSocket(httpServer: HttpServer) {
       const nextMana = Math.min(maxMana, session.mana + (heal.mp ?? 0));
 
       try {
-        await prisma.$transaction([
-          prisma.inventoryItem.delete({ where: { id: itemId } }),
-          prisma.character.update({
+        await prisma.$transaction(async (tx) => {
+          const cur = await tx.inventoryItem.findUnique({ where: { id: itemId } });
+          if (!cur || cur.characterId !== session.characterId) throw new Error('not-found');
+          const q = Math.max(0, cur.quantity ?? 1);
+          if (q <= 1) {
+            await tx.inventoryItem.delete({ where: { id: itemId } });
+          } else {
+            await tx.inventoryItem.update({ where: { id: itemId }, data: { quantity: q - 1 } });
+          }
+          await tx.character.update({
             where: { id: session.characterId },
             data: { hp: nextHp, mana: nextMana },
-          }),
-        ]);
+          });
+        });
       } catch {
         socket.emit('item:useFailed', { itemId, reason: 'db-error' });
         return;
@@ -702,6 +752,7 @@ export function attachRpgSocket(httpServer: HttpServer) {
       session.mana = nextMana;
       socket.emit('item:used', {
         itemId,
+        remainingQuantity: item.quantity > 1 ? (item.quantity - 1) : 0,
         hp: nextHp,
         mana: nextMana,
         maxHp,
@@ -941,18 +992,25 @@ export function attachRpgSocket(httpServer: HttpServer) {
         typeof z === 'number' && Number.isFinite(z) ? z : enemy ? enemy.z : undefined;
       if (aimX == null || aimZ == null) return;
 
-      // Free-aim safety: must be within 30×30 around the player (server authoritative).
-      const FREE_AIM_HALF = 15;
-      if (Math.abs(aimX - session.x) > FREE_AIM_HALF || Math.abs(aimZ - session.z) > FREE_AIM_HALF) return;
+      // Free-aim safety: only enforce when there is NO enemy target (free cast by x/z).
+      if (!enemy) {
+        const FREE_AIM_HALF = 15; // 30×30 square around player
+        if (Math.abs(aimX - session.x) > FREE_AIM_HALF || Math.abs(aimZ - session.z) > FREE_AIM_HALF) return;
+      }
       const now = Date.now();
       const readyAt = session.cooldowns[skillId] ?? 0;
       if (now < readyAt) return;
 
       try {
-        const { bundle, accuracy, manaCost, cooldownMs, critRatePctBonus, critDamagePctBonus } = await calculateSkillDamage(
-          session.characterId,
-          skillId,
-        );
+        const {
+          bundle,
+          accuracy,
+          manaCost,
+          cooldownMs,
+          critRatePctBonus,
+          critDamagePctBonus,
+          spellAlwaysHits,
+        } = await calculateSkillDamage(session.characterId, skillId);
         if (session.mana < manaCost) return;
         session.mana -= manaCost;
         session.cooldowns[skillId] = now + cooldownMs;
@@ -974,14 +1032,38 @@ export function attachRpgSocket(httpServer: HttpServer) {
           const PROJECTILE_SPEED = 14; // m/s
           const dx = aimX - session.x;
           const dz = aimZ - session.z;
-          const dist = Math.hypot(dx, dz);
-          const travelMs = Math.max(120, Math.min(900, Math.round((dist / PROJECTILE_SPEED) * 1000)));
+          const dist = Math.hypot(dx, dz) || 0.0001;
+
+          // Missile collision: find first living enemy intersected along the ray.
+          const MISSILE_HIT_R = 1.7;
+          let hitT = 1; // along 0..1
+          let hitEnemy: EnemyNetState | null = null;
+          for (const e of worldEnemies) {
+            if (e.hp <= 0) continue;
+            // Project enemy center onto segment
+            const ex = e.x - session.x;
+            const ez = e.z - session.z;
+            const t = (ex * dx + ez * dz) / (dist * dist);
+            if (t < 0 || t > hitT) continue;
+            const px = session.x + dx * t;
+            const pz = session.z + dz * t;
+            const d = Math.hypot(e.x - px, e.z - pz);
+            if (d <= MISSILE_HIT_R) {
+              hitT = t;
+              hitEnemy = e;
+            }
+          }
+
+          const impactX = hitEnemy ? hitEnemy.x : aimX;
+          const impactZ = hitEnemy ? hitEnemy.z : aimZ;
+          const impactDist = Math.hypot(impactX - session.x, impactZ - session.z);
+          const travelMs = Math.max(90, Math.min(900, Math.round((impactDist / PROJECTILE_SPEED) * 1000)));
           io.to(session.characterId).emit('skill:fxFirebolt', {
             seq: fxSeq,
             fromX: session.x,
             fromZ: session.z,
-            toX: aimX,
-            toZ: aimZ,
+            toX: impactX,
+            toZ: impactZ,
             travelMs,
             radius: FIREBOLT_RADIUS,
             mana: session.mana,
@@ -989,12 +1071,13 @@ export function attachRpgSocket(httpServer: HttpServer) {
           setTimeout(() => {
             const nowImpact = Date.now();
             const targets = worldEnemies.filter(
-              (e) => e.hp > 0 && Math.hypot(e.x - aimX, e.z - aimZ) <= FIREBOLT_RADIUS,
+              (e) => e.hp > 0 && Math.hypot(e.x - impactX, e.z - impactZ) <= FIREBOLT_RADIUS,
             );
             for (const target of targets) {
               const { damage, missed, didCrit, byElement } = totalDamageToTarget(bundle, target, accuracy, {
                 critRate,
                 critMult,
+                spellAlwaysHits,
               });
               if (!missed && byElement) applyElementalDebuffsToEnemy(target, byElement, bundle, nowImpact);
               target.hp = Math.max(0, target.hp - damage);
@@ -1017,10 +1100,84 @@ export function attachRpgSocket(httpServer: HttpServer) {
           return;
         }
 
+        // ─── Chaos Orb: green poison orb, multi-explosions along path + at end ─
+        if (skillId === 'chaosorb') {
+          const ORB_RADIUS = 2.5;
+          const PROJECTILE_SPEED = 14;
+          const dx = aimX - session.x;
+          const dz = aimZ - session.z;
+          const dist = Math.hypot(dx, dz) || 0.0001;
+
+          const MISSILE_HIT_R = 1.7;
+          const hits: { t: number; x: number; z: number }[] = [];
+          for (const e of worldEnemies) {
+            if (e.hp <= 0) continue;
+            const ex = e.x - session.x;
+            const ez = e.z - session.z;
+            const t = (ex * dx + ez * dz) / (dist * dist);
+            if (t < 0 || t > 1) continue;
+            const px = session.x + dx * t;
+            const pz = session.z + dz * t;
+            const d = Math.hypot(e.x - px, e.z - pz);
+            if (d <= MISSILE_HIT_R) {
+              hits.push({ t, x: px, z: pz });
+            }
+          }
+          hits.sort((a, b) => a.t - b.t);
+
+          const travelMs = Math.max(90, Math.min(900, Math.round((dist / PROJECTILE_SPEED) * 1000)));
+          io.to(session.characterId).emit('skill:fxChaosOrb', {
+            seq: fxSeq,
+            fromX: session.x,
+            fromZ: session.z,
+            toX: aimX,
+            toZ: aimZ,
+            travelMs,
+            radius: ORB_RADIUS,
+            mana: session.mana,
+            // Hint: where explosions are expected to happen (client can mirror visually)
+            explosions: [...hits.map((h) => ({ t: h.t, x: h.x, z: h.z })), { t: 1, x: aimX, z: aimZ }],
+          });
+
+          const explodeAt = (ex: number, ez: number) => {
+            const nowImpact = Date.now();
+            const targets = worldEnemies.filter((en) => en.hp > 0 && Math.hypot(en.x - ex, en.z - ez) <= ORB_RADIUS);
+            for (const target of targets) {
+              const { damage, missed, didCrit, byElement } = totalDamageToTarget(bundle, target, accuracy, {
+                critRate,
+                critMult,
+                spellAlwaysHits,
+              });
+              if (!missed && byElement) applyElementalDebuffsToEnemy(target, byElement, bundle, nowImpact);
+              target.hp = Math.max(0, target.hp - damage);
+              if (target.hp <= 0) markEnemyDead(target, nowImpact);
+              io.to(session.characterId).emit('combat:resolved', {
+                enemyId: target.id,
+                enemyHp: target.hp,
+                damage,
+                didCrit: didCrit ?? false,
+                skillId,
+                mana: session.mana,
+                missed,
+                diedAt: target.diedAt,
+              });
+              if (target.hp <= 0) void applyEnemyDefeatRewards(io, session, target);
+            }
+          };
+
+          // Explode at each collision, plus a final explosion at end range.
+          for (const h of hits) {
+            const atMs = Math.round(travelMs * h.t);
+            setTimeout(() => explodeAt(h.x, h.z), atMs);
+          }
+          setTimeout(() => explodeAt(aimX, aimZ), travelMs);
+          return;
+        }
+
         // ─── Blizzard: 5×5 area, 1 ice shard every 200ms for 2s ─────────────
         if (skillId === 'blizzard') {
           const BLIZZARD_HALF = 2.5; // half of 5×5 area
-          const SHARD_RADIUS = 1.5; // 3×3 area (radius ~1.5m)
+          const SHARD_RADIUS = 2; // ~4×4 ô (bán kính ~2m)
           const TICK_MS = 200;
           const DURATION_MS = 2000;
           const TICK_COUNT = Math.floor(DURATION_MS / TICK_MS);
@@ -1040,6 +1197,7 @@ export function attachRpgSocket(httpServer: HttpServer) {
             centerX: aimX,
             centerZ: aimZ,
             half: BLIZZARD_HALF,
+            shardRadius: SHARD_RADIUS,
             tickMs: TICK_MS,
             durationMs: DURATION_MS,
             mana: session.mana,
@@ -1063,6 +1221,7 @@ export function attachRpgSocket(httpServer: HttpServer) {
                 const { damage, missed, didCrit, byElement } = totalDamageToTarget(tickBundle, target, accuracy, {
                   critRate,
                   critMult,
+                  spellAlwaysHits,
                 });
                 if (!missed && byElement) applyElementalDebuffsToEnemy(target, byElement, tickBundle, nowTick);
                 target.hp = Math.max(0, target.hp - damage);
@@ -1092,6 +1251,7 @@ export function attachRpgSocket(httpServer: HttpServer) {
           const { damage, missed, didCrit, byElement } = totalDamageToTarget(bundle, target, accuracy, {
             critRate,
             critMult,
+            spellAlwaysHits,
           });
           if (!missed && byElement) applyElementalDebuffsToEnemy(target, byElement, bundle, Date.now());
           target.hp = Math.max(0, target.hp - damage);

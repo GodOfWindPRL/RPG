@@ -20,20 +20,20 @@ export function levelBasePhysDamage(level: number): number {
   return compoundPerLevel(100, level);
 }
 
-export function levelBaseMagicDamage(level: number): number {
-  return compoundPerLevel(100, level);
-}
-
 /** Sau Strength: +1% base physic / điểm STR */
 export function computeCorePhysDamage(c: StatSource): number {
   const b = levelBasePhysDamage(c.level);
   return Math.round(b * (1 + c.str * 0.01));
 }
 
-/** Sau Magic stat: +1% base magic / điểm MAG */
+/**
+ * Base magic damage: 10 flat (không tăng theo cấp).
+ * Mỗi điểm MAG: +0.5 flat và +1% trên phần flat (10 + MAG*0.5).
+ * Ví dụ 100 MAG → (10+50) * 1.6 = 96.
+ */
 export function computeCoreMagicDamage(c: StatSource): number {
-  const b = levelBaseMagicDamage(c.level);
-  return Math.round(b * (1 + c.mag * 0.01));
+  const flat = 10 + c.mag * 0.5;
+  return Math.round(flat * (1 + c.mag * 0.01));
 }
 
 export function computeMaxHp(c: StatSource): number {
@@ -352,6 +352,17 @@ export function sumEquippedAffixTotals(
     }
   }
   return out;
+}
+
+/** Core magic trên nhân vật + flat magic trang bị + % magic từ set. */
+export function computeEquippedCoreMagicDamage(
+  c: StatSource,
+  inventoryItems: Array<{ equipped?: boolean; affixJson: string }>,
+): number {
+  const totals = sumEquippedAffixTotals(inventoryItems);
+  const set = computeActiveSetBonusTotals(inventoryItems);
+  const base = computeCoreMagicDamage(c);
+  return Math.round((base + totals.magicDamage) * (1 + set.coreMagicDamagePct / 100));
 }
 
 export function withComputedStats<T extends Character>(character: T) {

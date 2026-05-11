@@ -14,6 +14,7 @@ const MODEL_SCALE = 0.008;
 const MODEL_OFFSET_Y = 0.35;
 
 export function EnemyMesh({
+  id,
   name,
   isBoss,
   x,
@@ -28,6 +29,7 @@ export function EnemyMesh({
   onSelect,
   debuffs,
 }: {
+  id: string;
   name: string;
   isBoss: boolean;
   x: number;
@@ -238,7 +240,28 @@ export function EnemyMesh({
   }, []);
 
   return (
-    <group ref={rootRef} onClick={hp > 0 ? onSelect : undefined}>
+    <group
+      ref={rootRef}
+      onPointerDown={
+        hp > 0
+          ? (e) => {
+              e.stopPropagation();
+              const btn =
+                typeof (e as any).nativeEvent?.button === 'number'
+                  ? (e as any).nativeEvent.button
+                  : typeof (e as any).button === 'number'
+                    ? (e as any).button
+                    : 0;
+              window.dispatchEvent(
+                new CustomEvent('rpg:enemyPointerDown', {
+                  detail: { enemyId: id, button: btn, x, z },
+                }),
+              );
+              onSelect();
+            }
+          : undefined
+      }
+    >
       {isBoss && hp > 0 && (
         <group position={[0, 0.03, 0]}>
           <mesh rotation={[-Math.PI / 2, 0, 0]}>

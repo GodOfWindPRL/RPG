@@ -16,26 +16,41 @@ export const skillDefinitions = [
   {
     id: 'firebolt',
     name: 'Firebolt',
-    description: 'Hurl a fireball that explodes on impact, damaging all enemies in a 5×5 area.',
+    description:
+      'Spell (Fire). Luôn trúng. Dùng magic damage + fire damage + bonus theo cấp; nổ 5×5 tại điểm chạm.',
     requiredLevel: 2,
     requiredSkill: null,
-    baseDamage: 60,
+    baseDamage: 0,
     manaCost: 12,
     cooldownMs: 0,
-    damageKind: SkillDamageKind.MAGIC,
+    damageKind: SkillDamageKind.SPELL,
     element: SkillElement.FIRE,
   },
   {
     id: 'blizzard',
     name: 'Blizzard',
-    description: 'Conjure a 5×5 ice storm. Every 0.2s an ice shard falls in the area for 2s.',
+    description:
+      'Spell (Cold). Luôn trúng. Bão 5×5, mỗi 0.2s một mảnh băng (vùng 4×4) trong 2 giây.',
     requiredLevel: 4,
     requiredSkill: null,
-    baseDamage: 22,
+    baseDamage: 0,
     manaCost: 30,
     cooldownMs: 0,
-    damageKind: SkillDamageKind.MAGIC,
+    damageKind: SkillDamageKind.SPELL,
     element: SkillElement.COLD,
+  },
+  {
+    id: 'chaosorb',
+    name: 'Chaos Orb',
+    description:
+      'Spell (Poison). Luôn trúng. Quỹ độc bay theo đường; nổ khi chạm quái và ở tầm tối đa.',
+    requiredLevel: 3,
+    requiredSkill: null,
+    baseDamage: 0,
+    manaCost: 14,
+    cooldownMs: 0,
+    damageKind: SkillDamageKind.SPELL,
+    element: SkillElement.POISON,
   },
 ];
 

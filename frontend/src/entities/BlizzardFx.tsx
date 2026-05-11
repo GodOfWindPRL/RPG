@@ -28,9 +28,19 @@ type BlizzardFxProps = {
   durationMs: number;
   /** Half-width of the 5×5 area (≈2.5). */
   half: number;
+  /** Server hit radius per shard (≈2 for 4×4 ô). */
+  shardRadius?: number;
 };
 
-export function BlizzardFx({ seq, centerX, centerZ, startMs, durationMs, half }: BlizzardFxProps) {
+export function BlizzardFx({
+  seq,
+  centerX,
+  centerZ,
+  startMs,
+  durationMs,
+  half,
+  shardRadius = 2,
+}: BlizzardFxProps) {
   const removeBlizzardFx = useGameStore((s) => s.removeBlizzardFx);
 
   const groupRef = useRef<THREE.Group>(null);
@@ -133,8 +143,8 @@ export function BlizzardFx({ seq, centerX, centerZ, startMs, durationMs, half }:
         // Hide the falling shard mesh
         mat.opacity = Math.max(0, 0.85 * (1 - sp * 1.6));
         mesh.position.y = 0.3 - sp * 0.15;
-        // Splash ring grows + fades
-        const r = 0.2 + sp * 1.1;
+        // Splash ring grows to match shard hit radius (world meters)
+        const r = 0.15 + sp * Math.max(0.6, shardRadius * 0.92);
         splash.scale.set(r, 1, r);
         splashMat.opacity = 0.85 * (1 - sp);
         if (sp >= 1) {
