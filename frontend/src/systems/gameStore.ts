@@ -72,6 +72,8 @@ interface GameState {
   playerFacingYaw: number;
   /** VFX Slash: snapshot vị trí / hướng lúc vung (không bám theo player). */
   slashFx: { seq: number; x: number; z: number; yaw: number; durationMs?: number } | null;
+  /** Savage: snapshot cast để sprite 3 nhát (trùng timing server 20/40/60% period). */
+  savageSpriteBurst: { id: number; x: number; z: number; yaw: number; periodMs: number } | null;
   /** Server ack for slashStart; used to gate slashHit when spam clicking. */
   slashAcceptedSwingId: number | null;
   /** Fireball projectiles in flight; cleared by FireBoltFx after explosion fades. */
@@ -188,6 +190,8 @@ interface GameState {
   setAttackAnimSkillId: (skillId: string | null) => void;
   triggerSlashFx: (x: number, z: number, yaw: number, durationMs?: number) => void;
   clearSlashFx: () => void;
+  triggerSavageSpriteBurst: (x: number, z: number, yaw: number, periodMs: number) => void;
+  clearSavageSpriteBurst: () => void;
   setSlashAcceptedSwingId: (swingId: number | null) => void;
   spawnFireboltFx: (fx: {
     seq?: number | string;
@@ -266,6 +270,7 @@ export const useGameStore = create<GameState>((set) => ({
   attackAnimStartedAt: 0,
   playerFacingYaw: 0,
   slashFx: null,
+  savageSpriteBurst: null,
   slashAcceptedSwingId: null,
   fireboltFx: [],
   blizzardFx: [],
@@ -377,6 +382,17 @@ export const useGameStore = create<GameState>((set) => ({
       slashFx: { seq: (state.slashFx?.seq ?? 0) + 1, x, z, yaw, ...(typeof durationMs === 'number' ? { durationMs } : {}) },
     })),
   clearSlashFx: () => set({ slashFx: null }),
+  triggerSavageSpriteBurst: (x, z, yaw, periodMs) =>
+    set({
+      savageSpriteBurst: {
+        id: Date.now() + Math.floor(Math.random() * 1000),
+        x,
+        z,
+        yaw,
+        periodMs: Math.max(120, Math.round(periodMs)),
+      },
+    }),
+  clearSavageSpriteBurst: () => set({ savageSpriteBurst: null }),
   setSlashAcceptedSwingId: (slashAcceptedSwingId) => set({ slashAcceptedSwingId }),
   spawnFireboltFx: (fx) =>
     set((state) => {

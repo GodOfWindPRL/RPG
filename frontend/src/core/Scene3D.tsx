@@ -5,6 +5,8 @@ import * as THREE from 'three';
 import { PlayerMesh } from '../entities/PlayerMesh';
 import { EnemyMesh } from '../entities/EnemyMesh';
 import { SlashArcFx } from '../entities/SlashArcFx';
+import { SlashSpriteFx } from '../entities/SlashSpriteFx';
+import { SavageSlashSpriteBurst } from '../entities/SavageSlashSpriteBurst';
 import { FireBoltFx } from '../entities/FireBoltFx';
 import { BlizzardFx } from '../entities/BlizzardFx';
 import { ChaosOrbFx } from '../entities/ChaosOrbFx';
@@ -208,23 +210,12 @@ export function Scene3D() {
   const meteorFx = useGameStore((s) => s.meteorFx);
   const chainLightningFx = useGameStore((s) => s.chainLightningFx);
   const splitArrowFx = useGameStore((s) => s.splitArrowFx);
-  const playerFacingYaw = useGameStore((s) => s.playerFacingYaw);
-  const attackAnimSkillId = useGameStore((s) => s.attackAnimSkillId);
-  const attackAnimStartedAt = useGameStore((s) => s.attackAnimStartedAt);
-  const playerBuffs = useGameStore((s) => s.playerBuffs);
   const cameraFov = useCameraSettingsStore((s) => s.fov);
   const distanceScale = useCameraSettingsStore((s) => s.distanceScale);
   const o = CAMERA_BASE_OFFSET;
   const camPos: [number, number, number] = [o.x * distanceScale, o.y * distanceScale, o.z * distanceScale];
 
   if (!character) return null;
-
-  const hastePct = (playerBuffs?.hasteUntil ?? 0) > Date.now() ? Math.max(0, playerBuffs?.hastePct ?? 0) : 0;
-  const atkSpd = Math.max(10, Math.round(character.attackSpeed * (1 + hastePct / 100)));
-  const savagePeriodMs = Math.max(120, Math.round((1000 * 100) / atkSpd));
-  const showSavageDebug = attackAnimSkillId === 'savage' && Date.now() - (attackAnimStartedAt ?? 0) < savagePeriodMs;
-  const savageHalfW = 2.5;
-  const savageDepth = 3.0;
 
   return (
     <Canvas style={{ width: '100%', height: '100%' }} shadows="percentage" camera={{ position: camPos, fov: cameraFov }}>
@@ -240,35 +231,31 @@ export function Scene3D() {
         <lineBasicMaterial color="#38bdf8" />
       </lineSegments>
       <PlayerMesh x={character.posX} y={0} z={character.posZ} isDead={character.hp <= 0} />
-      {showSavageDebug && (
-        <group position={[character.posX, 0.03, character.posZ]} rotation={[0, playerFacingYaw, 0]}>
-          {/* forward is +Z in local space (matches our yaw convention) */}
-          <mesh position={[0, 0, savageDepth / 2]} rotation={[-Math.PI / 2, 0, 0]}>
-            <planeGeometry args={[savageHalfW * 2, savageDepth]} />
-            <meshBasicMaterial
-              color="#f97316"
-              transparent
-              opacity={0.22}
-              side={THREE.DoubleSide}
-              depthWrite={false}
-            />
-          </mesh>
-          <lineSegments position={[0, 0.001, savageDepth / 2]}>
-            <edgesGeometry args={[new THREE.PlaneGeometry(savageHalfW * 2, savageDepth)]} />
-            <lineBasicMaterial color="#fb923c" transparent opacity={0.9} />
-          </lineSegments>
-        </group>
-      )}
       {slashFx && (
-        <SlashArcFx
-          key={slashFx.seq}
-          seq={slashFx.seq}
-          x={character.posX}
-          z={character.posZ}
-          yaw={playerFacingYaw}
-          durationSec={Math.max(0.2, Math.min(2.5, (slashFx.durationMs ?? 1000) / 1000))}
-        />
+        <>
+          <SlashArcFx
+            key={slashFx.seq}
+            seq={slashFx.seq}
+            x={slashFx.x}
+            z={slashFx.z}
+            yaw={slashFx.yaw}
+            hideProceduralVisual
+            anchorToPlayer
+            durationSec={Math.max(0.2, Math.min(2.5, (slashFx.durationMs ?? 1000) / 1000))}
+          />
+          <SlashSpriteFx
+            key={`spr-${slashFx.seq}`}
+            playToken={slashFx.seq}
+            x={slashFx.x}
+            z={slashFx.z}
+            yaw={slashFx.yaw}
+            anchorToPlayer
+            durationSec={Math.max(0.2, Math.min(2.5, (slashFx.durationMs ?? 1000) / 1000))}
+            preset="slash3"
+          />
+        </>
       )}
+      <SavageSlashSpriteBurst />
       {fireboltFx.map((fx) => (
         <FireBoltFx
           key={String(fx.seq)}

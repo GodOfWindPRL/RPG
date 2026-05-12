@@ -119,6 +119,7 @@ export default function App() {
   const triggerAttackAnim = useGameStore((s) => s.triggerAttackAnim);
   const setAttackAnimSkillId = useGameStore((s) => s.setAttackAnimSkillId);
   const triggerSlashFx = useGameStore((s) => s.triggerSlashFx);
+  const triggerSavageSpriteBurst = useGameStore((s) => s.triggerSavageSpriteBurst);
   const setSlashAcceptedSwingId = useGameStore((s) => s.setSlashAcceptedSwingId);
   const spawnBlizzardFx = useGameStore((s) => s.spawnBlizzardFx);
   const setPlayerFacingYaw = useGameStore((s) => s.setPlayerFacingYaw);
@@ -364,7 +365,13 @@ export default function App() {
       setAttackAnimSkillId(skillId);
       triggerAttackAnim();
 
-      if (!sock) return;
+      if (!sock) {
+        if (skillId === 'savage') {
+          const yaw0 = useGameStore.getState().playerFacingYaw;
+          triggerSavageSpriteBurst(cur.posX, cur.posZ, yaw0, period);
+        }
+        return;
+      }
 
       // Slash without a selected target: free-aim only (arc collision).
       if (skillId === 'slash' && !target) return;
@@ -437,6 +444,7 @@ export default function App() {
           const aimDist = 2.5;
           const toX = caster.posX + Math.sin(yaw) * aimDist;
           const toZ = caster.posZ + Math.cos(yaw) * aimDist;
+          triggerSavageSpriteBurst(caster.posX, caster.posZ, yaw, period);
           sock.emit('skill:cast', { skillId, x: toX, z: toZ });
         } else {
           // Other skills still require a target for now.
@@ -470,6 +478,7 @@ export default function App() {
           if (skillId === 'slash') {
             // Slash damage uses `skill:slashHit` after wind-up (separate listeners).
           } else if (skillId === 'savage') {
+            triggerSavageSpriteBurst(c.posX, c.posZ, yaw, period);
             // Server staggers 3 hits at 20/40/60% of attack period; cast immediately so timing matches spec.
             sock.emit('skill:cast', { skillId, enemyId: t.id, x: t.x, z: t.z });
           } else {
@@ -532,6 +541,7 @@ export default function App() {
       triggerAttackAnim,
       setAttackAnimSkillId,
       triggerSlashFx,
+      triggerSavageSpriteBurst,
       setPlayerFacingYaw,
       attackPeriodMs,
       spawnBlizzardFx,

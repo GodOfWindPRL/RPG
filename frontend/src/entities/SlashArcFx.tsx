@@ -83,9 +83,14 @@ type SlashArcFxProps = {
   yaw: number;
   /** How long the swing VFX lasts (seconds). */
   durationSec?: number;
+  /** When true, chỉ giữ logic quét hit — ẩn vòng cung procedural (dùng sprite VFX). */
+  hideProceduralVisual?: boolean;
+  /** Mỗi frame bám theo nhân vật (hit test + nhóm mesh). */
+  anchorToPlayer?: boolean;
 };
 
-export function SlashArcFx({ seq, x, z, yaw, durationSec }: SlashArcFxProps) {
+export function SlashArcFx({ seq, x, z, yaw, durationSec, hideProceduralVisual, anchorToPlayer }: SlashArcFxProps) {
+  const groupRef = useRef<THREE.Group>(null);
   const meshRef = useRef<THREE.Mesh>(null);
   const matRef = useRef<THREE.MeshBasicMaterial>(null);
   const t0Ref = useRef<number | null>(null);
@@ -98,6 +103,23 @@ export function SlashArcFx({ seq, x, z, yaw, durationSec }: SlashArcFxProps) {
     return Math.max(0.2, Math.min(2.5, d));
   }, [durationSec]);
   useLayoutEffect(() => {
+    const grp = groupRef.current;
+    if (grp) {
+      let px = x;
+      let pz = z;
+      let y = yaw;
+      if (anchorToPlayer) {
+        const st = useGameStore.getState();
+        const ch = st.character;
+        if (ch) {
+          px = ch.posX;
+          pz = ch.posZ;
+          y = st.playerFacingYaw;
+        }
+      }
+      grp.position.set(px, 0.95, pz);
+      grp.rotation.set(0, y, 0);
+    }
     const mesh = meshRef.current;
     if (!mesh) return;
     if (mesh.geometry) mesh.geometry.dispose();
@@ -107,7 +129,7 @@ export function SlashArcFx({ seq, x, z, yaw, durationSec }: SlashArcFxProps) {
     const m = matRef.current;
     if (m) m.opacity = 0.88;
     hitSentRef.current = new Set();
-  }, [seq]);
+  }, [seq, anchorToPlayer, x, z, yaw]);
 
   useEffect(
     () => () => {
@@ -147,11 +169,26 @@ export function SlashArcFx({ seq, x, z, yaw, durationSec }: SlashArcFxProps) {
 
     const win = arcWindow(center);
     if (!win) return;
+    let px = x;
+    let pz = z;
+    let yawLive = yaw;
+    if (anchorToPlayer) {
+      const st = useGameStore.getState();
+      const ch = st.character;
+      if (ch) {
+        px = ch.posX;
+        pz = ch.posZ;
+        yawLive = st.playerFacingYaw;
+      }
+    }
+    const grp = groupRef.current;
+    if (grp) {
+      grp.position.set(px, 0.95, pz);
+      grp.rotation.set(0, yawLive, 0);
+    }
     const mComb = mCombRef.current;
-    mComb.makeRotationY(yaw).multiply(mRxRef.current);
+    mComb.makeRotationY(yawLive).multiply(mRxRef.current);
     const enemies = useGameStore.getState().enemies;
-    const px = x;
-    const pz = z;
     const v = vSampleRef.current;
     const sent = hitSentRef.current;
     outer: for (const e of enemies) {
@@ -171,7 +208,7 @@ export function SlashArcFx({ seq, x, z, yaw, durationSec }: SlashArcFxProps) {
             sent.add(e.id);
             window.dispatchEvent(
               new CustomEvent('rpg:slashHit', {
-                detail: { enemyId: e.id, swingId: seq, yaw },
+                detail: { enemyId: e.id, swingId: seq, yaw: yawLive },
               }),
             );
             continue outer;
@@ -183,8 +220,8 @@ export function SlashArcFx({ seq, x, z, yaw, durationSec }: SlashArcFxProps) {
 
   return (
     // Raise to roughly player hand/torso height (feel like a weapon swing, not ground swipe).
-    <group position={[x, 0.95, z]} rotation={[0, yaw, 0]}>
-      <mesh ref={meshRef} rotation={[Math.PI / 2, 0, 0]} renderOrder={3}>
+    <group ref={groupRef} position={[x, 0.95, z]} rotation={[0, yaw, 0]}>
+      <mesh ref={meshRef} visible={!hideProceduralVisual} rotation={[Math.PI / 2, 0, 0]} renderOrder={3}>
         <meshBasicMaterial
           ref={matRef}
           color="#ffffff"
