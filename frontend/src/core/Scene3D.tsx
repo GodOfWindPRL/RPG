@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef } from 'react';
+import { Suspense, useEffect, useLayoutEffect, useRef } from 'react';
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import { Html } from '@react-three/drei';
 import * as THREE from 'three';
@@ -17,6 +17,7 @@ import { useGameStore } from '../systems/gameStore';
 import { CAMERA_BASE_OFFSET, useCameraSettingsStore } from '../systems/cameraSettingsStore';
 import { MAP_SIZE } from './world';
 import { GroundMesh } from './GroundMesh';
+import { ForestScatter } from './ForestScatter';
 
 /** Một lần cho cả session — tránh `new BoxGeometry` mỗi lần re-render (rò GPU/RAM khi chơi lâu). */
 const BOUNDARY_EDGES_GEOM = new THREE.EdgesGeometry(new THREE.BoxGeometry(MAP_SIZE, 0.05, MAP_SIZE));
@@ -218,7 +219,12 @@ export function Scene3D() {
   if (!character) return null;
 
   return (
-    <Canvas style={{ width: '100%', height: '100%' }} shadows="percentage" camera={{ position: camPos, fov: cameraFov }}>
+    <Canvas
+      style={{ width: '100%', height: '100%' }}
+      shadows="percentage"
+      camera={{ position: camPos, fov: cameraFov }}
+      gl={{ logarithmicDepthBuffer: true }}
+    >
       <CameraFovSync />
       <MouseGroundTracker />
       <GroundPointerEmitter />
@@ -227,6 +233,9 @@ export function Scene3D() {
       <directionalLight intensity={1.1} position={[6, 14, 4]} castShadow />
       <FollowCamera x={character.posX} z={character.posZ} />
       <GroundMesh />
+      <Suspense fallback={null}>
+        <ForestScatter />
+      </Suspense>
       <lineSegments position={[0, 0.02, 0]} geometry={BOUNDARY_EDGES_GEOM}>
         <lineBasicMaterial color="#38bdf8" />
       </lineSegments>
@@ -269,46 +278,48 @@ export function Scene3D() {
           radius={fx.radius}
         />
       ))}
-      {blizzardFx.map((fx) => (
-        <BlizzardFx
-          key={fx.seq}
-          seq={fx.seq}
-          centerX={fx.centerX}
-          centerZ={fx.centerZ}
-          startMs={fx.startMs}
-          durationMs={fx.durationMs}
-          half={fx.half}
-          shardRadius={fx.shardRadius ?? 2}
-        />
-      ))}
-      {chaosOrbFx.map((fx) => (
-        <ChaosOrbFx
-          key={fx.seq}
-          seq={fx.seq}
-          fromX={fx.fromX}
-          fromZ={fx.fromZ}
-          toX={fx.toX}
-          toZ={fx.toZ}
-          startMs={fx.startMs}
-          travelMs={fx.travelMs}
-          radius={fx.radius}
-          explosions={fx.explosions}
-        />
-      ))}
-      {meteorFx.map((fx) => (
-        <MeteorFx
-          key={String(fx.seq)}
-          seq={fx.seq}
-          aimX={fx.aimX}
-          aimZ={fx.aimZ}
-          fromX={fx.fromX}
-          fromZ={fx.fromZ}
-          startMs={fx.startMs}
-          fallMs={fx.fallMs}
-          burnHalf={fx.burnHalf}
-          burnDurationMs={fx.burnDurationMs}
-        />
-      ))}
+      <Suspense fallback={null}>
+        {blizzardFx.map((fx) => (
+          <BlizzardFx
+            key={fx.seq}
+            seq={fx.seq}
+            centerX={fx.centerX}
+            centerZ={fx.centerZ}
+            startMs={fx.startMs}
+            durationMs={fx.durationMs}
+            half={fx.half}
+            shardRadius={fx.shardRadius ?? 2}
+          />
+        ))}
+        {chaosOrbFx.map((fx) => (
+          <ChaosOrbFx
+            key={fx.seq}
+            seq={fx.seq}
+            fromX={fx.fromX}
+            fromZ={fx.fromZ}
+            toX={fx.toX}
+            toZ={fx.toZ}
+            startMs={fx.startMs}
+            travelMs={fx.travelMs}
+            radius={fx.radius}
+            explosions={fx.explosions}
+          />
+        ))}
+        {meteorFx.map((fx) => (
+          <MeteorFx
+            key={String(fx.seq)}
+            seq={fx.seq}
+            aimX={fx.aimX}
+            aimZ={fx.aimZ}
+            fromX={fx.fromX}
+            fromZ={fx.fromZ}
+            startMs={fx.startMs}
+            fallMs={fx.fallMs}
+            burnHalf={fx.burnHalf}
+            burnDurationMs={fx.burnDurationMs}
+          />
+        ))}
+      </Suspense>
       {chainLightningFx.map((fx) => (
         <ChainLightningFx
           key={String(fx.seq)}

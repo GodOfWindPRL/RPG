@@ -1,10 +1,17 @@
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef } from "react";
 import { useFrame } from "@react-three/fiber";
+import { useTexture } from "@react-three/drei";
 import * as THREE from "three";
 import { useGameStore } from "../systems/gameStore";
+import greenEffectBulletUrl from "../assets/vfx/EffectBullet/Green Effect and Bullet 16x16.png";
+import { applyEffectBulletCellUV, EFFECT_BULLET_COLS } from "../vfx/effectBulletAtlas";
 
 const PROJECTILE_Y = 1.05;
 const EXPLOSION_MS = 420;
+/** Quay quanh trục thẳng đứng (mặt phẳng song song đất). */
+const FLY_SPRITE_SPIN_RAD_S = 5.5;
+
+useTexture.preload(greenEffectBulletUrl);
 
 type ChaosOrbFxProps = {
   seq: number;
@@ -31,8 +38,25 @@ export function ChaosOrbFx({
 }: ChaosOrbFxProps) {
   const removeChaosOrbFx = useGameStore((s) => s.removeChaosOrbFx);
   const orbRef = useRef<THREE.Group>(null);
-  const coreMatRef = useRef<THREE.MeshBasicMaterial>(null);
-  const haloMatRef = useRef<THREE.MeshBasicMaterial>(null);
+  const flySpinRef = useRef<THREE.Group>(null);
+  const flySpriteMatRef = useRef<THREE.MeshBasicMaterial>(null);
+  const greenSheet = useTexture(greenEffectBulletUrl);
+  const flySpriteMap = useMemo(() => {
+    const t = greenSheet.clone();
+    t.needsUpdate = true;
+    return t;
+  }, [greenSheet]);
+
+  useLayoutEffect(() => {
+    const tex = flySpriteMap;
+    tex.colorSpace = THREE.SRGBColorSpace;
+    tex.magFilter = THREE.NearestFilter;
+    tex.minFilter = THREE.NearestFilter;
+    applyEffectBulletCellUV(tex, EFFECT_BULLET_COLS - 1, 0);
+    return () => {
+      tex.dispose();
+    };
+  }, [flySpriteMap]);
 
   const expRefs = useRef<(THREE.Group | null)[]>([]);
   const expRingMatRefs = useRef<(THREE.MeshBasicMaterial | null)[]>([]);
@@ -52,16 +76,17 @@ export function ChaosOrbFx({
     return () => window.clearTimeout(t);
   }, [seq, travelMs, removeChaosOrbFx]);
 
-  useFrame(() => {
+  useFrame((_, delta) => {
+    const spin = flySpinRef.current;
+    if (spin) spin.rotation.y += delta * FLY_SPRITE_SPIN_RAD_S;
     const elapsed = Math.max(0, Date.now() - startMs);
     const p = Math.min(1, elapsed / Math.max(1, travelMs));
     const x = fromX + (toX - fromX) * p;
     const z = fromZ + (toZ - fromZ) * p;
     if (orbRef.current) orbRef.current.position.set(x, PROJECTILE_Y, z);
     const pulse = 1 + Math.sin(elapsed * 0.028) * 0.12;
-    if (coreMatRef.current) coreMatRef.current.opacity = 0.92;
-    if (haloMatRef.current)
-      haloMatRef.current.opacity = 0.45 + 0.08 * Math.sin(elapsed * 0.02);
+    if (flySpriteMatRef.current)
+      flySpriteMatRef.current.opacity = 0.92 + 0.06 * Math.sin(elapsed * 0.024);
     if (orbRef.current) orbRef.current.scale.setScalar(pulse);
 
     // Explosions: expand + fade for each scheduled time.
@@ -104,28 +129,22 @@ export function ChaosOrbFx({
     <>
       <group ref={orbRef} position={[fromX, PROJECTILE_Y, fromZ]}>
         <pointLight color="#6ee7b7" intensity={3.5} distance={7} decay={2} />
-        <mesh renderOrder={6}>
-          <sphereGeometry args={[0.5, 16, 16]} />
-          <meshBasicMaterial
-            ref={haloMatRef}
-            color="#22c55e"
-            transparent
-            opacity={0.5}
-            depthWrite={false}
-            blending={THREE.AdditiveBlending}
-          />
-        </mesh>
-        <mesh renderOrder={7}>
-          <sphereGeometry args={[0.22, 16, 16]} />
-          <meshBasicMaterial
-            ref={coreMatRef}
-            color="#bbf7d0"
-            transparent
-            opacity={0.92}
-            depthWrite={false}
-            blending={THREE.AdditiveBlending}
-          />
-        </mesh>
+        <group ref={flySpinRef}>
+          {/* Plane XY → gập -90° X: nằm trên mặt đất (XZ), pháp tuyến +Y */}
+          <mesh rotation={[-Math.PI / 2, 0, 0]} renderOrder={7}>
+            <planeGeometry args={[0.95, 0.95]} />
+            <meshBasicMaterial
+              ref={flySpriteMatRef}
+              map={flySpriteMap}
+              transparent
+              opacity={0.92}
+              depthWrite={false}
+              toneMapped={false}
+              side={THREE.DoubleSide}
+              blending={THREE.AdditiveBlending}
+            />
+          </mesh>
+        </group>
       </group>
 
       {explosions.map((e, i) => (
