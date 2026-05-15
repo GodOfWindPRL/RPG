@@ -2,7 +2,7 @@ import { useLayoutEffect, useMemo } from 'react';
 import { Clone, useGLTF } from '@react-three/drei';
 import * as THREE from 'three';
 import { fixGltfSpecularGlossinessMaterials } from './gltfSpecularGlossinessFix';
-import { MAP_HALF_SIZE } from './world';
+import { computeForestScatterXZ, FOREST_SCATTER_SEED } from './forestObstacles';
 
 /** Kết quả `useGLTF` có `parser` để gắn texture từ extension cũ. */
 type GltfWithParser = {
@@ -14,12 +14,8 @@ import forestPackUrl from '../assets/model/various_forest_assets_pack.glb?url';
 import simpleTreeUrl from '../assets/model/simple_tree.glb?url';
 import treePs1Url from '../assets/model/tree_ps1psx_style.glb?url';
 
-/** Số cây / prop trên bản đồ (random trong các mẫu có sẵn). */
-const SCATTER_COUNT = 50;
-/** Lùi vào trong biên map để không chồng lên viền xanh. */
-const EDGE_MARGIN = 7;
-/** Seed cố định → vị trí ổn định mỗi lần load (đổi số = bố cục khác). */
-const SCATTER_SEED = 738_561;
+/** Seed riêng cho chọn mẫu / xoay / scale — giữ `computeForestScatterXZ` đúng thứ tự với server. */
+const FOREST_VISUAL_RNG_SEED = FOREST_SCATTER_SEED + 1_000_003;
 
 function mulberry32(seed: number) {
   return function () {
@@ -83,14 +79,14 @@ export function ForestScatter() {
 
   const placements = useMemo(() => {
     if (templates.length === 0) return [];
-    const rng = mulberry32(SCATTER_SEED);
-    const span = MAP_HALF_SIZE - EDGE_MARGIN;
-    return Array.from({ length: SCATTER_COUNT }, (_, i) => {
+    const rng = mulberry32(FOREST_VISUAL_RNG_SEED);
+    const xz = computeForestScatterXZ();
+    return xz.map((p, i) => {
       const src = templates[Math.floor(rng() * templates.length)]!;
       return {
         id: i,
         source: src,
-        position: [(rng() * 2 - 1) * span, -0.02, (rng() * 2 - 1) * span] as [number, number, number],
+        position: [p.x, -0.02, p.z] as [number, number, number],
         rotation: [0, rng() * Math.PI * 2, 0] as [number, number, number],
         scale: 0.4 + rng() * 0.55,
       };

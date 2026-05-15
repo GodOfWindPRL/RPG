@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import type { Character, CharacterQuest, CharacterSkill, Enemy, InventoryItem } from '../core/types';
-import { MAP_HALF_SIZE } from '../core/world';
+import { resolvePlayerMoveXZ } from '../core/worldCollision';
 import type { EquipmentSlot } from '../core/items';
 
 /** Giới hạn nhẹ để tránh DOM/Html chồng quá dày; không ép DPR hay giảm mượt camera. */
@@ -459,11 +459,14 @@ export const useGameStore = create<GameState>((set) => ({
   moveBy: (dx, dz) =>
     set((state) => {
       if (!state.character) return state;
+      const fromX = state.character.posX;
+      const fromZ = state.character.posZ;
+      const { x, z } = resolvePlayerMoveXZ(fromX, fromZ, fromX + dx, fromZ + dz, state.enemies);
       return {
         character: {
           ...state.character,
-          posX: Math.max(-MAP_HALF_SIZE, Math.min(MAP_HALF_SIZE, state.character.posX + dx)),
-          posZ: Math.max(-MAP_HALF_SIZE, Math.min(MAP_HALF_SIZE, state.character.posZ + dz)),
+          posX: x,
+          posZ: z,
         },
       };
     }),

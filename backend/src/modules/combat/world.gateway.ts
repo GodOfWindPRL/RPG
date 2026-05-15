@@ -23,6 +23,12 @@ import {
 } from '../item/item.service.js';
 import { progressCollectQuest, progressKillQuest } from '../quest/quest.service.js';
 import { clampWorldXZ } from '../shared/worldBounds.js';
+import { getForestObstacleCircles } from '../shared/forestObstacles.js';
+import {
+  ENEMY_COLLISION_RADIUS,
+  PLAYER_COLLISION_RADIUS,
+  xzPushOutFromCircles,
+} from '../shared/xzCollision.js';
 import {
   computeActiveSetBonusTotals,
   computeAttackSpeed,
@@ -187,6 +193,34 @@ function markEnemyDead(enemy: EnemyNetState, now: number) {
 
 function aliveSessions(): PlayerSession[] {
   return Array.from(sessions.values()).filter((s) => s.hp > 0);
+}
+
+function resolvePlayerSessionXZ(characterId: string, x: number, z: number): { x: number; z: number } {
+  const forest = getForestObstacleCircles();
+  const enemyCs = worldEnemies
+    .filter((e) => e.hp > 0)
+    .map((e) => ({ x: e.x, z: e.z, r: ENEMY_COLLISION_RADIUS }));
+  const otherPlayers = Array.from(sessions.values())
+    .filter((s) => s.characterId !== characterId && s.hp > 0)
+    .map((s) => ({ x: s.x, z: s.z, r: PLAYER_COLLISION_RADIUS }));
+  return xzPushOutFromCircles(clampWorldXZ(x), clampWorldXZ(z), PLAYER_COLLISION_RADIUS, [
+    ...forest,
+    ...enemyCs,
+    ...otherPlayers,
+  ]);
+}
+
+function resolveEnemyXZ(enemyId: string, x: number, z: number): { x: number; z: number } {
+  const forest = getForestObstacleCircles();
+  const playerCs = aliveSessions().map((s) => ({ x: s.x, z: s.z, r: PLAYER_COLLISION_RADIUS }));
+  const otherEnemies = worldEnemies
+    .filter((o) => o.id !== enemyId && o.hp > 0)
+    .map((o) => ({ x: o.x, z: o.z, r: ENEMY_COLLISION_RADIUS }));
+  return xzPushOutFromCircles(clampWorldXZ(x), clampWorldXZ(z), ENEMY_COLLISION_RADIUS, [
+    ...forest,
+    ...playerCs,
+    ...otherEnemies,
+  ]);
 }
 
 function ensureEnemyAi() {
@@ -430,8 +464,11 @@ async function aiTick(io: Server) {
           const nx = dx / len;
           const nz = dz / len;
           // While aggro'd, chase across the world map (leash only applies to wander).
-          enemy.x = clampWorldXZ(enemy.x + nx * step);
-          enemy.z = clampWorldXZ(enemy.z + nz * step);
+          const chaseX = clampWorldXZ(enemy.x + nx * step);
+          const chaseZ = clampWorldXZ(enemy.z + nz * step);
+          const rp = resolveEnemyXZ(enemy.id, chaseX, chaseZ);
+          enemy.x = rp.x;
+          enemy.z = rp.z;
           enemy.yaw = Math.atan2(nx, nz);
           moved = step > 0.0001;
         } else {
@@ -480,8 +517,11 @@ async function aiTick(io: Server) {
         const step = Math.min(ENEMY_WANDER_SPEED * slowMult * dt, dist);
         const nx = dx / dist;
         const nz = dz / dist;
-        enemy.x = clampToHome(enemy.x + nx * step, ai.homeX);
-        enemy.z = clampToHome(enemy.z + nz * step, ai.homeZ);
+        const wx = clampToHome(enemy.x + nx * step, ai.homeX);
+        const wz = clampToHome(enemy.z + nz * step, ai.homeZ);
+        const wp = resolveEnemyXZ(enemy.id, wx, wz);
+        enemy.x = clampToHome(wp.x, ai.homeX);
+        enemy.z = clampToHome(wp.z, ai.homeZ);
         enemy.yaw = Math.atan2(nx, nz);
         moved = step > 0.0001;
       }
@@ -795,9 +835,10 @@ export function attachRpgSocket(httpServer: HttpServer) {
     socket.on('player:move', async ({ x, y, z }: { x: number; y: number; z: number }) => {
       const session = sessions.get(socket.id);
       if (!session || session.hp <= 0) return;
-      session.x = clampWorldXZ(x);
+      const p = resolvePlayerSessionXZ(session.characterId, x, z);
+      session.x = p.x;
       session.y = y;
-      session.z = clampWorldXZ(z);
+      session.z = p.z;
       await updateCharacterPosition(session.characterId, session.x, session.y, session.z);
       socket.to(session.characterId).emit('player:moved', { characterId: session.characterId, x, y, z });
     });

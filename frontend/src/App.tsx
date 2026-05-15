@@ -10,6 +10,7 @@ import { SkillPanel } from './ui/SkillPanel';
 import { CameraSettingsPanel } from './ui/CameraSettingsPanel';
 import { CAMERA_BASE_OFFSET } from './systems/cameraSettingsStore';
 import { PLAYER_MAX_MOVE_SPEED } from './core/world';
+import { preloadGameWorldAssets } from './core/gameContentPreload';
 import { ModalShell } from './ui/game/ModalShell';
 import { PlayerHud } from './ui/game/PlayerHud';
 import { QuestTracker } from './ui/game/QuestTracker';
@@ -126,10 +127,10 @@ export default function App() {
   const socketRef = useSocketSync();
   const [modal, setModal] = useState<GameModal>(null);
   const [showDeathScreen, setShowDeathScreen] = useState(false);
+  const [worldAssetsReady, setWorldAssetsReady] = useState(false);
   const chaseTimerRef = useRef<number | null>(null);
   const moveLoopRafRef = useRef(0);
   const lastMoveLoopTickRef = useRef(0);
-  const nextActionAtRef = useRef(0);
   const skillReadyAtRef = useRef<Record<string, number>>({});
   const moveToRef = useRef<{ x: number; z: number } | null>(null);
   const kickMoveLoopRef = useRef<() => void>(() => {});
@@ -200,6 +201,26 @@ export default function App() {
     window.addEventListener('rpg:cancelMoveIntent', onCancelMoveIntent);
     return () => window.removeEventListener('rpg:cancelMoveIntent', onCancelMoveIntent);
   }, [stopChase]);
+
+  useEffect(() => {
+    if (!character) {
+      setWorldAssetsReady(false);
+      setShowDeathScreen(false);
+      return;
+    }
+    let cancelled = false;
+    preloadGameWorldAssets()
+      .then(() => {
+        if (!cancelled) setWorldAssetsReady(true);
+      })
+      .catch((err) => {
+        console.error('preloadGameWorldAssets', err);
+        if (!cancelled) setWorldAssetsReady(true);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [character?.id]);
 
   useEffect(() => {
     if (!character) {
@@ -309,7 +330,6 @@ export default function App() {
   const tryCastSkillIndex = useCallback(
     (skillIndex: number) => {
       const now = Date.now();
-      if (now < nextActionAtRef.current) return;
       const skill = useGameStore.getState().skills[skillIndex];
       if (!skill) return;
       const skillId = skill.skill.id;
@@ -348,7 +368,6 @@ export default function App() {
       const period = attackPeriodMs();
       const cdMs = Math.max(0, Math.round(skill.skill.cooldownMs ?? 0));
       const gateMs = Math.max(period, cdMs);
-      nextActionAtRef.current = Date.now() + gateMs;
       skillReadyAtRef.current[skillId] = Date.now() + gateMs;
       useGameStore.getState().setSkillCooldownReadyAt(skillId, skillReadyAtRef.current[skillId]!);
       if (skillId === 'slash') {
@@ -954,7 +973,13 @@ export default function App() {
   return (
     <div className="game-root" onContextMenu={(e) => e.preventDefault()}>
       <div className="scene-wrap">
-        <Scene3D />
+        {!worldAssetsReady ? (
+          <div className="assets-loading-overlay" aria-busy="true" aria-live="polite">
+            Đang tải tài nguyên…
+          </div>
+        ) : (
+          <Scene3D />
+        )}
       </div>
 
       <div className="left-stack">
